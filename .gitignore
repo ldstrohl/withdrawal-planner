@@ -6,5 +6,8 @@ __pycache__/
 *.egg-info/
 .DS_Store
 .claude/
-# Personal scenarios — put your own JSON here and the app will prefer it over the default
-scenarios/*.local.json
+# Scenario JSONs — only the canonical default is tracked. Personal/exported
+# scenarios stay local. The app loads scenarios/default.local.json first if it
+# exists, falling back to the tracked default.
+scenarios/*.json
+!scenarios/default.json
