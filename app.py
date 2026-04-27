@@ -65,6 +65,12 @@ def render_sidebar() -> SimulationInputs:
     start_age = st.sidebar.number_input("Retirement age", value=35, step=1)
     horizon = st.sidebar.number_input("Years to simulate", value=60, step=1)
 
+    st.sidebar.markdown("### Social Security")
+    ss_benefit = st.sidebar.number_input("Annual SS benefit (real $)", value=0, step=1_000,
+        help="Estimated annual benefit in today's dollars. Use ssa.gov estimator. Set 0 to disable.")
+    ss_claim = st.sidebar.number_input("SS claim age", value=67, min_value=62, max_value=70, step=1,
+        help="62=earliest, 67=full retirement age, 70=max delay.")
+
     st.sidebar.markdown("### ACA assumption")
     aca_mode = st.sidebar.radio(
         "Subsidy schedule",
@@ -95,6 +101,8 @@ def render_sidebar() -> SimulationInputs:
         start_age=int(start_age),
         horizon_years=int(horizon),
         aca_mode=aca_mode,
+        ss_annual_benefit=float(ss_benefit),
+        ss_claim_age=int(ss_claim),
     )
 
 

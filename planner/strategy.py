@@ -47,6 +47,8 @@ class PlanResult:
     target_net: float
     funded: float  # what we actually delivered (may be < target_net if portfolio insolvent)
     shortfall: float
+    ss_income: float = 0.0
+    rmd_amount: float = 0.0
 
 
 # --- conversion sizing ------------------------------------------------------
@@ -166,6 +168,8 @@ def plan_year(
     params: TaxParams = TAX_PARAMS_2026,
     aca_mode: str = "cap",
     custom_conversion: Optional[float] = None,
+    ss_income: float = 0.0,
+    rmd_amount: float = 0.0,
     max_iter: int = 40,
     tol: float = 1.0,
 ) -> PlanResult:
@@ -174,7 +178,8 @@ def plan_year(
     Iterates to a fixed point because taxes depend on withdrawals which depend on
     target gross need which depends on taxes.
     """
-    gross_need = target_net  # initial guess
+    effective_target = max(target_net - ss_income, 0.0)
+    gross_need = effective_target  # initial guess
     last = None
 
     for _ in range(max_iter):
@@ -190,10 +195,14 @@ def plan_year(
 
         w, ltcg, shortfall = _fund_priority(portfolio, age, year, gross_need)
 
+        # Force-bump traditional withdrawal to satisfy RMD.
+        if rmd_amount > w.traditional:
+            w.traditional = rmd_amount
+
         # Ordinary income = conversion + traditional withdrawals + non-qualified HSA distribution
         # (HSA non-medical pre-65 also incurs 20% penalty; we ignore HSA penalty for v1
         # since HSA is last-resort and the simulator should never reach it under reasonable inputs.)
-        ordinary_income = conversion + w.traditional + w.hsa
+        ordinary_income = conversion + w.traditional + w.hsa + ss_income
 
         tax = federal_tax(ordinary_income, ltcg, params)
         penalty = early_withdrawal_penalty(w.traditional, age)
@@ -203,7 +212,7 @@ def plan_year(
         else:
             healthcare = aca_premium(magi, params, aca_mode)
 
-        new_gross = target_net + tax["total"] + penalty + healthcare["out_of_pocket"]
+        new_gross = effective_target + tax["total"] + penalty + healthcare["out_of_pocket"]
 
         last = PlanResult(
             withdrawals=w,
@@ -217,6 +226,8 @@ def plan_year(
             target_net=target_net,
             funded=target_net - shortfall,
             shortfall=shortfall,
+            ss_income=ss_income,
+            rmd_amount=rmd_amount,
         )
 
         if abs(new_gross - gross_need) < tol:
