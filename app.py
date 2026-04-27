@@ -8,6 +8,7 @@ from __future__ import annotations
 import json as _json
 import dataclasses as _dc
 
+import pandas as pd
 import streamlit as st
 
 import charts
@@ -15,6 +16,7 @@ from planner.montecarlo import run_monte_carlo
 from planner.returns import HistoricalPlayback, LognormalReturns
 from planner.simulate import SimulationInputs, simulate, summarize
 from planner.strategy import STRATEGY_DESCRIPTIONS, STRATEGY_PRESETS
+from planner.streams import ExpenseStream, IncomeStream
 
 
 st.set_page_config(page_title="Withdrawal Planner", layout="wide", initial_sidebar_state="expanded")
@@ -50,6 +52,8 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
     "ss_annual_benefit": 0,
     "ss_claim_age": 67,
     "aca_mode": "cap",
+    "income_streams": [],
+    "expense_streams": [],
 }
 
 
@@ -118,6 +122,43 @@ try:
 except AttributeError:
     def _fragment(f):
         return f
+
+
+_INCOME_COLS = ["name", "annual_amount", "start_age", "end_age", "taxable"]
+_EXPENSE_COLS = ["name", "annual_amount", "start_age", "end_age"]
+
+
+def _rows_to_income_streams(rows) -> tuple:
+    out = []
+    for r in rows or []:
+        name = r.get("name")
+        amt = r.get("annual_amount")
+        if not name or amt is None or (isinstance(amt, float) and pd.isna(amt)):
+            continue
+        out.append(IncomeStream(
+            name=str(name),
+            annual_amount=float(amt),
+            start_age=int(r.get("start_age") or 0),
+            end_age=int(r.get("end_age") or 120),
+            taxable=bool(r.get("taxable", True)),
+        ))
+    return tuple(out)
+
+
+def _rows_to_expense_streams(rows) -> tuple:
+    out = []
+    for r in rows or []:
+        name = r.get("name")
+        amt = r.get("annual_amount")
+        if not name or amt is None or (isinstance(amt, float) and pd.isna(amt)):
+            continue
+        out.append(ExpenseStream(
+            name=str(name),
+            annual_amount=float(amt),
+            start_age=int(r.get("start_age") or 0),
+            end_age=int(r.get("end_age") or 120),
+        ))
+    return tuple(out)
 
 
 def _pick_mc_path(mc, year_label_fn=None, key_prefix: str = "") -> int:
@@ -222,6 +263,53 @@ def render_sidebar() -> SimulationInputs:
             help="62=earliest, 67=full retirement age, 70=max delay.",
         )
 
+    # Scheduled income & expense streams
+    with st.sidebar.expander("Scheduled streams (income / expense)", expanded=False):
+        st.caption(
+            "SS-like recurring cash flows. Income reduces required gross withdrawal; "
+            "taxable income also lifts ordinary-income tax. Expense raises required "
+            "gross need, no tax effect. Age window inclusive."
+        )
+
+        st.markdown("**Income streams** (rentals, pensions, planned sales, etc.)")
+        inc_seed = st.session_state.get("scn_income_streams", [])
+        inc_df = pd.DataFrame(inc_seed, columns=_INCOME_COLS)
+        inc_edited = st.data_editor(
+            inc_df,
+            num_rows="dynamic",
+            hide_index=True,
+            column_config={
+                "name": st.column_config.TextColumn("Name", required=True),
+                "annual_amount": st.column_config.NumberColumn("Annual $ (real)", format="$%.0f", step=1_000),
+                "start_age": st.column_config.NumberColumn("Start age", min_value=0, max_value=120, step=1),
+                "end_age": st.column_config.NumberColumn("End age", min_value=0, max_value=120, step=1),
+                "taxable": st.column_config.CheckboxColumn("Taxable?", default=True,
+                    help="Adds to federal ordinary income (e.g. rental, pension). Uncheck for non-taxable (gift, muni interest)."),
+            },
+            key="income_editor",
+        )
+        st.session_state["scn_income_streams"] = inc_edited.to_dict("records")
+
+        st.markdown("**Expense streams** (property tax/maintenance, tuition, LTC, etc.)")
+        exp_seed = st.session_state.get("scn_expense_streams", [])
+        exp_df = pd.DataFrame(exp_seed, columns=_EXPENSE_COLS)
+        exp_edited = st.data_editor(
+            exp_df,
+            num_rows="dynamic",
+            hide_index=True,
+            column_config={
+                "name": st.column_config.TextColumn("Name", required=True),
+                "annual_amount": st.column_config.NumberColumn("Annual $ (real)", format="$%.0f", step=1_000),
+                "start_age": st.column_config.NumberColumn("Start age", min_value=0, max_value=120, step=1),
+                "end_age": st.column_config.NumberColumn("End age", min_value=0, max_value=120, step=1),
+            },
+            key="expense_editor",
+        )
+        st.session_state["scn_expense_streams"] = exp_edited.to_dict("records")
+
+    income_streams = _rows_to_income_streams(st.session_state.get("scn_income_streams", []))
+    expense_streams = _rows_to_expense_streams(st.session_state.get("scn_expense_streams", []))
+
     st.sidebar.markdown("### ACA assumption")
     aca_mode = st.sidebar.radio(
         "Subsidy schedule",
@@ -237,36 +325,7 @@ def render_sidebar() -> SimulationInputs:
     )
 
     # G. Download button for scenario save
-    inputs_dict = {
-        k: v for k, v in _dc.asdict(SimulationInputs(
-            initial_cash=float(cash),
-            initial_taxable=float(taxable),
-            taxable_basis=float(basis),
-            initial_traditional=float(traditional),
-            initial_roth=float(roth),
-            roth_contributions=float(roth_contrib),
-            initial_hsa=float(hsa),
-            target_spend=float(target),
-            stock_return=float(stock_return),
-            bond_return=float(bond_return),
-            cash_return=float(cash_return),
-            stock_allocation=float(stock_alloc),
-            start_age=int(start_age),
-            horizon_years=int(horizon),
-            aca_mode=aca_mode,
-            ss_annual_benefit=float(ss_benefit),
-            ss_claim_age=int(ss_claim),
-        )).items()
-        if k != "params"
-    }
-    st.sidebar.download_button(
-        "Save scenario JSON",
-        data=_json.dumps(inputs_dict, indent=2),
-        file_name="scenario.json",
-        mime="application/json",
-    )
-
-    return SimulationInputs(
+    built_inputs = SimulationInputs(
         initial_cash=float(cash),
         initial_taxable=float(taxable),
         taxable_basis=float(basis),
@@ -284,7 +343,18 @@ def render_sidebar() -> SimulationInputs:
         aca_mode=aca_mode,
         ss_annual_benefit=float(ss_benefit),
         ss_claim_age=int(ss_claim),
+        income_streams=income_streams,
+        expense_streams=expense_streams,
     )
+    inputs_dict = {k: v for k, v in _dc.asdict(built_inputs).items() if k != "params"}
+    st.sidebar.download_button(
+        "Save scenario JSON",
+        data=_json.dumps(inputs_dict, indent=2),
+        file_name="scenario.json",
+        mime="application/json",
+    )
+
+    return built_inputs
 
 
 def kpi_row(results, summary: dict) -> None:
@@ -331,6 +401,9 @@ def single_scenario_view(base: SimulationInputs) -> None:
         st.plotly_chart(charts.tax_breakdown(results), use_container_width=True)
 
     st.plotly_chart(charts.conversions_bars(results), use_container_width=True)
+
+    if any(r.plan.scheduled_income or r.plan.scheduled_expense for r in results):
+        st.plotly_chart(charts.scheduled_streams_bars(results), use_container_width=True)
 
     cols = st.columns(2)
     with cols[0]:
@@ -539,6 +612,22 @@ def inputs_summary_view(base: SimulationInputs) -> None:
     ]
     for label, value in items:
         st.markdown(f"- **{label}:** {value}")
+
+    if base.income_streams:
+        st.markdown("##### Income streams")
+        st.dataframe(
+            [{"Name": s.name, "Annual $": f"${s.annual_amount:,.0f}",
+              "Start age": s.start_age, "End age": s.end_age,
+              "Taxable?": "yes" if s.taxable else "no"} for s in base.income_streams],
+            hide_index=True, use_container_width=True,
+        )
+    if base.expense_streams:
+        st.markdown("##### Expense streams")
+        st.dataframe(
+            [{"Name": s.name, "Annual $": f"${s.annual_amount:,.0f}",
+              "Start age": s.start_age, "End age": s.end_age} for s in base.expense_streams],
+            hide_index=True, use_container_width=True,
+        )
 
     st.markdown("##### Notes & assumptions baked in")
     st.markdown(

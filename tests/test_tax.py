@@ -196,6 +196,88 @@ def test_bridge_guarded_caps_conversion_in_pre60_years():
     assert r[0].plan.conversion <= 5_000 + 1, f"Expected conversion <= ~5k, got {r[0].plan.conversion}"
 
 
+def test_income_stream_offsets_gross_need():
+    """A non-taxable income stream reduces the cash-flow need 1:1, no tax effect."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.streams import IncomeStream
+    from planner.returns import ConstantReturns
+    base = SimulationInputs(
+        initial_cash=20_000, initial_taxable=200_000, taxable_basis=200_000,
+        initial_traditional=0, initial_roth=0, initial_hsa=0,
+        target_spend=40_000, start_age=40, horizon_years=2,
+        strategy="minimal_convert",
+    )
+    with_stream = SimulationInputs(
+        **{k: v for k, v in base.__dict__.items() if k != "income_streams"},
+        income_streams=(IncomeStream(name="gift", annual_amount=20_000, start_age=40, end_age=40, taxable=False),),
+    )
+    a = simulate(base, returns_model=ConstantReturns(0, 0, 0))[0]
+    b = simulate(with_stream, returns_model=ConstantReturns(0, 0, 0))[0]
+    # Non-taxable income should reduce gross_used by ~$20k
+    assert b.plan.gross_used < a.plan.gross_used - 19_000
+    # Tax should be unchanged (no taxable income from the stream)
+    assert abs(b.plan.federal_tax - a.plan.federal_tax) < 5  # $0 in this scenario
+
+
+def test_taxable_income_stream_enters_ordinary_income():
+    """A taxable income stream (rental) shows up in ordinary_income and bumps tax."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.streams import IncomeStream
+    from planner.returns import ConstantReturns
+    inp = SimulationInputs(
+        initial_cash=20_000, initial_taxable=200_000, taxable_basis=200_000,
+        initial_traditional=0, initial_roth=0, initial_hsa=0,
+        target_spend=40_000, start_age=40, horizon_years=2,
+        strategy="minimal_convert",
+        income_streams=(IncomeStream(name="rental", annual_amount=30_000, start_age=40, end_age=80, taxable=True),),
+    )
+    r = simulate(inp, returns_model=ConstantReturns(0, 0, 0))[0]
+    assert r.plan.scheduled_taxable_income == 30_000
+    # Ordinary income should include the rental
+    assert r.plan.ordinary_income >= 30_000
+
+
+def test_expense_stream_increases_gross_need():
+    """An expense stream increases the gross need by its amount, no tax effect."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.streams import ExpenseStream
+    from planner.returns import ConstantReturns
+    base = SimulationInputs(
+        initial_cash=20_000, initial_taxable=300_000, taxable_basis=300_000,
+        initial_traditional=0, initial_roth=0, initial_hsa=0,
+        target_spend=40_000, start_age=40, horizon_years=2,
+        strategy="minimal_convert",
+    )
+    with_exp = SimulationInputs(
+        **{k: v for k, v in base.__dict__.items() if k != "expense_streams"},
+        expense_streams=(ExpenseStream(name="property", annual_amount=15_000, start_age=40, end_age=90),),
+    )
+    a = simulate(base, returns_model=ConstantReturns(0, 0, 0))[0]
+    b = simulate(with_exp, returns_model=ConstantReturns(0, 0, 0))[0]
+    assert b.plan.gross_used >= a.plan.gross_used + 14_000
+    assert b.plan.scheduled_expense == 15_000
+
+
+def test_streams_age_window_inclusive():
+    """Stream is active when start_age <= age <= end_age, inactive otherwise."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.streams import IncomeStream
+    from planner.returns import ConstantReturns
+    inp = SimulationInputs(
+        initial_cash=10_000, initial_taxable=500_000, taxable_basis=500_000,
+        initial_traditional=0, initial_roth=0, initial_hsa=0,
+        target_spend=40_000, start_age=40, horizon_years=5,
+        strategy="minimal_convert",
+        income_streams=(IncomeStream(name="r", annual_amount=10_000, start_age=42, end_age=43, taxable=True),),
+    )
+    rs = simulate(inp, returns_model=ConstantReturns(0, 0, 0))
+    assert rs[0].plan.scheduled_income == 0          # age 40
+    assert rs[1].plan.scheduled_income == 0          # age 41
+    assert rs[2].plan.scheduled_income == 10_000     # age 42 (start)
+    assert rs[3].plan.scheduled_income == 10_000     # age 43 (end)
+    assert rs[4].plan.scheduled_income == 0          # age 44
+
+
 def test_bridge_guarded_relaxes_cap_post60():
     """Post-60, no cap — should match bridge_optimal target sizing."""
     from planner.simulate import SimulationInputs, simulate

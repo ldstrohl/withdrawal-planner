@@ -53,6 +53,9 @@ class PlanResult:
     rmd_amount: float = 0.0
     state_tax: float = 0.0
     gross_used: float = 0.0  # actual gross need for cash-flow (pre-RMD-forced bump)
+    scheduled_income: float = 0.0
+    scheduled_taxable_income: float = 0.0
+    scheduled_expense: float = 0.0
 
 
 # --- conversion sizing ------------------------------------------------------
@@ -191,6 +194,9 @@ def plan_year(
     custom_conversion: Optional[float] = None,
     ss_income: float = 0.0,
     rmd_amount: float = 0.0,
+    scheduled_income: float = 0.0,
+    scheduled_taxable_income: float = 0.0,
+    scheduled_expense: float = 0.0,
     max_iter: int = 40,
     tol: float = 1.0,
 ) -> PlanResult:
@@ -199,7 +205,8 @@ def plan_year(
     Iterates to a fixed point because taxes depend on withdrawals which depend on
     target gross need which depends on taxes.
     """
-    effective_target = max(target_net - ss_income, 0.0)
+    # SS + scheduled income reduce cash-flow requirement; scheduled expense raises it.
+    effective_target = max(target_net + scheduled_expense - ss_income - scheduled_income, 0.0)
     gross_need = effective_target  # initial guess
     last = None
 
@@ -221,9 +228,10 @@ def plan_year(
             w.traditional = min(rmd_amount, portfolio.traditional.balance)
 
         # Only the taxable portion of SS enters ordinary income.
-        other_ord = conversion + w.traditional + w.hsa
+        other_ord = conversion + w.traditional + w.hsa + scheduled_taxable_income
         ss_taxable = taxable_ss(ss_income, other_ord, ltcg)
         # Ordinary income = conversion + traditional withdrawals + non-qualified HSA distribution
+        # + scheduled taxable income streams (rental, pension, etc.).
         # (HSA non-medical pre-65 also incurs 20% penalty; we ignore HSA penalty for v1
         # since HSA is last-resort and the simulator should never reach it under reasonable inputs.)
         ordinary_income = other_ord + ss_taxable
@@ -255,6 +263,9 @@ def plan_year(
             rmd_amount=rmd_amount,
             state_tax=state_tax_amt,
             gross_used=gross_need,
+            scheduled_income=scheduled_income,
+            scheduled_taxable_income=scheduled_taxable_income,
+            scheduled_expense=scheduled_expense,
         )
 
         if abs(new_gross - gross_need) < tol:

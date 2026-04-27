@@ -17,6 +17,7 @@ from typing import List, Optional
 from .accounts import Cash, HSA, Portfolio, RothIRA, Taxable, TraditionalIRA
 from .returns import ConstantReturns, ReturnsModel
 from .strategy import PlanResult, plan_year
+from .streams import ExpenseStream, IncomeStream, active_expense, active_income
 from .tax import TAX_PARAMS_2026, TaxParams, required_min_distribution
 
 
@@ -56,6 +57,8 @@ class SimulationInputs:
     params: TaxParams = field(default_factory=lambda: TAX_PARAMS_2026)
     ss_annual_benefit: float = 0.0
     ss_claim_age: int = 67
+    income_streams: tuple = ()    # tuple of IncomeStream (real $)
+    expense_streams: tuple = ()   # tuple of ExpenseStream (real $)
 
 
 def build_portfolio(inputs: SimulationInputs) -> Portfolio:
@@ -133,6 +136,8 @@ def simulate(
         # 2. Plan the year.
         ss = inputs.ss_annual_benefit if age >= inputs.ss_claim_age else 0.0
         rmd = required_min_distribution(portfolio.traditional.balance, age)
+        sched_income, sched_taxable = active_income(inputs.income_streams, age)
+        sched_expense = active_expense(inputs.expense_streams, age)
         plan = plan_year(
             portfolio=portfolio,
             age=age,
@@ -144,6 +149,9 @@ def simulate(
             custom_conversion=inputs.custom_conversion,
             ss_income=ss,
             rmd_amount=rmd,
+            scheduled_income=sched_income,
+            scheduled_taxable_income=sched_taxable,
+            scheduled_expense=sched_expense,
         )
 
         # 3+4. Apply.
@@ -192,6 +200,8 @@ def summarize(results: List[YearResult]) -> dict:
     total_conversions = sum(r.plan.conversion for r in results)
     total_shortfall = sum(r.plan.shortfall for r in results)
     total_state_tax = sum(r.plan.state_tax for r in results)
+    total_scheduled_income = sum(r.plan.scheduled_income for r in results)
+    total_scheduled_expense = sum(r.plan.scheduled_expense for r in results)
     last = results[-1]
     return {
         "ending_total": last.ending_total,
@@ -204,4 +214,6 @@ def summarize(results: List[YearResult]) -> dict:
         "total_conversions": total_conversions,
         "total_shortfall": total_shortfall,
         "total_state_tax": total_state_tax,
+        "total_scheduled_income": total_scheduled_income,
+        "total_scheduled_expense": total_scheduled_expense,
     }

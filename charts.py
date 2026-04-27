@@ -121,6 +121,31 @@ def cashflow_bars(results: List[YearResult]) -> go.Figure:
     return fig
 
 
+def scheduled_streams_bars(results: List[YearResult]) -> go.Figure:
+    """Per-year scheduled income (positive) and expense (negative) cash flows.
+
+    Designed to make age-windowed streams visible at a glance — rental years,
+    tuition years, LTC late-life expenses all show up as bars with sign.
+    """
+    ages = _ages(results)
+    income = [r.plan.scheduled_income for r in results]
+    expense = [-r.plan.scheduled_expense for r in results]  # negative for visual offset
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=ages, y=income, name="Income (rentals, pension, etc.)",
+                         marker_color="#10B981", hovertemplate="%{y:$,.0f}"))
+    fig.add_trace(go.Bar(x=ages, y=expense, name="Expense (property, tuition, LTC, etc.)",
+                         marker_color="#DC2626", hovertemplate="%{y:$,.0f}"))
+    fig.update_layout(
+        **_layout(
+            "Scheduled income / expense streams (real $)",
+            xaxis=dict(title="Age"),
+            yaxis=dict(title="Annual cash flow", tickformat="$,.0f"),
+        ),
+        barmode="relative",
+    )
+    return fig
+
+
 def conversions_bars(results: List[YearResult]) -> go.Figure:
     """Annual Roth conversion amounts (kept on its own panel to avoid dual-axis confusion)."""
     ages = _ages(results)
