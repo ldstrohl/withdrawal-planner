@@ -15,6 +15,7 @@ from .tax import (
     TAX_PARAMS_2026,
     TaxParams,
     aca_premium,
+    medicare_premium,
     early_withdrawal_penalty,
     federal_tax,
     fpl_400_ceiling,
@@ -41,7 +42,7 @@ class PlanResult:
     ordinary_income: float
     federal_tax: float
     penalty: float
-    aca_oop: float
+    healthcare_oop: float
     magi: float
     target_net: float
     funded: float  # what we actually delivered (may be < target_net if portfolio insolvent)
@@ -197,9 +198,12 @@ def plan_year(
         tax = federal_tax(ordinary_income, ltcg, params)
         penalty = early_withdrawal_penalty(w.traditional, age)
         magi = ordinary_income + ltcg
-        aca = aca_premium(magi, params, aca_mode)
+        if age >= 65:
+            healthcare = medicare_premium(magi, age)
+        else:
+            healthcare = aca_premium(magi, params, aca_mode)
 
-        new_gross = target_net + tax["total"] + penalty + aca["out_of_pocket"]
+        new_gross = target_net + tax["total"] + penalty + healthcare["out_of_pocket"]
 
         last = PlanResult(
             withdrawals=w,
@@ -208,7 +212,7 @@ def plan_year(
             ordinary_income=ordinary_income,
             federal_tax=tax["total"],
             penalty=penalty,
-            aca_oop=aca["out_of_pocket"],
+            healthcare_oop=healthcare["out_of_pocket"],
             magi=magi,
             target_net=target_net,
             funded=target_net - shortfall,

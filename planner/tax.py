@@ -157,6 +157,44 @@ def aca_premium(
     }
 
 
+# 2025 Medicare Part B + Part D base + IRMAA tiers (single filer).
+# IRMAA is based on MAGI from 2 years prior; for simplicity we use current-year MAGI.
+MEDICARE_BASE_ANNUAL = 2_096.40   # Part B base ~$174.70/mo * 12
+MEDICARE_PARTD_BASE = 480.0        # Part D base ~$40/mo * 12
+
+# (MAGI upper limit, total annual surcharge above base, Part B + Part D combined)
+IRMAA_TIERS_SINGLE = (
+    (106_000.0, 0.0),
+    (133_000.0, 1_028.40 + 165.60),
+    (167_000.0, 2_569.20 + 425.40),
+    (200_000.0, 4_110.00 + 686.40),
+    (500_000.0, 5_650.80 + 947.40),
+    (float("inf"), 6_165.60 + 1_032.00),
+)
+
+
+def medicare_premium(magi: float, age: int) -> dict:
+    """Medicare Part B + D base + IRMAA surcharge.
+
+    Caller is responsible for invoking only at age >= 65.
+    Returns {"out_of_pocket", "irmaa_surcharge", "tier", "base"}.
+    """
+    base = MEDICARE_BASE_ANNUAL + MEDICARE_PARTD_BASE
+    surcharge = 0.0
+    tier = 0
+    for i, (upper, extra) in enumerate(IRMAA_TIERS_SINGLE):
+        if magi <= upper:
+            surcharge = extra
+            tier = i
+            break
+    return {
+        "out_of_pocket": base + surcharge,
+        "irmaa_surcharge": surcharge,
+        "tier": tier,
+        "base": base,
+    }
+
+
 def early_withdrawal_penalty(traditional_withdrawal: float, age: int) -> float:
     """10% penalty on Traditional/401k withdrawals before age 59.5."""
     if age >= 60 or traditional_withdrawal <= 0:

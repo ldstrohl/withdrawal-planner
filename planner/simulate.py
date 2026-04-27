@@ -170,7 +170,7 @@ def summarize(results: List[YearResult]) -> dict:
     if not results:
         return {}
     total_tax = sum(r.plan.federal_tax for r in results)
-    total_aca = sum(r.plan.aca_oop for r in results)
+    total_aca = sum(r.plan.healthcare_oop for r in results)
     total_penalty = sum(r.plan.penalty for r in results)
     total_conversions = sum(r.plan.conversion for r in results)
     total_shortfall = sum(r.plan.shortfall for r in results)
@@ -181,7 +181,7 @@ def summarize(results: List[YearResult]) -> dict:
         "years_funded": len(results),
         "depleted": last.ending_total < 1.0,
         "total_federal_tax": total_tax,
-        "total_aca_oop": total_aca,
+        "total_healthcare_oop": total_aca,
         "total_penalty": total_penalty,
         "total_conversions": total_conversions,
         "total_shortfall": total_shortfall,
