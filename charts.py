@@ -19,9 +19,17 @@ PALETTE = {
     "tax_ord": "#DC2626",
     "tax_ltcg": "#F59E0B",
     "aca": "#0EA5E9",
+    "medicare": "#0369A1",
     "penalty": "#7C2D12",
     "spend": "#1F2937",
     "conversion": "#10B981",
+}
+
+STRATEGY_DISPLAY = {
+    "bridge_optimal": "Bridge optimal",
+    "minimal_convert": "Minimal convert",
+    "aggressive_convert": "Aggressive convert",
+    "custom": "Custom",
 }
 
 STRATEGY_COLORS = {
@@ -90,13 +98,15 @@ def cashflow_bars(results: List[YearResult]) -> go.Figure:
     ages = _ages(results)
     spending = [r.target_net for r in results]
     fed_tax = [r.plan.federal_tax for r in results]
-    aca = [r.plan.healthcare_oop for r in results]
+    aca_pre65 = [r.plan.healthcare_oop if r.age < 65 else 0 for r in results]
+    medicare_65plus = [r.plan.healthcare_oop if r.age >= 65 else 0 for r in results]
     penalty = [r.plan.penalty for r in results]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=ages, y=spending, name="Net spending", marker_color=PALETTE["spend"], hovertemplate="%{y:$,.0f}"))
     fig.add_trace(go.Bar(x=ages, y=fed_tax, name="Federal tax", marker_color=PALETTE["tax_ord"], hovertemplate="%{y:$,.0f}"))
-    fig.add_trace(go.Bar(x=ages, y=aca, name="Healthcare OOP", marker_color=PALETTE["aca"], hovertemplate="%{y:$,.0f}"))
+    fig.add_trace(go.Bar(x=ages, y=aca_pre65, name="ACA premium (pre-65)", marker_color=PALETTE["aca"], hovertemplate="%{y:$,.0f}"))
+    fig.add_trace(go.Bar(x=ages, y=medicare_65plus, name="Medicare + IRMAA (65+)", marker_color=PALETTE["medicare"], hovertemplate="%{y:$,.0f}"))
     fig.add_trace(go.Bar(x=ages, y=penalty, name="Early-withdrawal penalty", marker_color=PALETTE["penalty"], hovertemplate="%{y:$,.0f}"))
     fig.update_layout(
         **_layout(
@@ -130,12 +140,14 @@ def tax_breakdown(results: List[YearResult]) -> go.Figure:
     """Stacked bars: federal ordinary, federal LTCG (combined into federal here), ACA OOP, penalty."""
     ages = _ages(results)
     fed_tax = [r.plan.federal_tax for r in results]
-    aca = [r.plan.healthcare_oop for r in results]
+    aca_pre65 = [r.plan.healthcare_oop if r.age < 65 else 0 for r in results]
+    medicare_65plus = [r.plan.healthcare_oop if r.age >= 65 else 0 for r in results]
     penalty = [r.plan.penalty for r in results]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=ages, y=fed_tax, name="Federal income tax", marker_color=PALETTE["tax_ord"]))
-    fig.add_trace(go.Bar(x=ages, y=aca, name="Healthcare OOP", marker_color=PALETTE["aca"]))
+    fig.add_trace(go.Bar(x=ages, y=aca_pre65, name="ACA premium (pre-65)", marker_color=PALETTE["aca"]))
+    fig.add_trace(go.Bar(x=ages, y=medicare_65plus, name="Medicare + IRMAA (65+)", marker_color=PALETTE["medicare"]))
     fig.add_trace(go.Bar(x=ages, y=penalty, name="Early-withdrawal penalty", marker_color=PALETTE["penalty"]))
     fig.update_layout(
         **_layout(
@@ -213,14 +225,15 @@ def compare_balance_trajectory(scenarios: Dict[str, List[YearResult]]) -> go.Fig
     fig = go.Figure()
     for name, results in scenarios.items():
         color = STRATEGY_COLORS.get(name, _STRATEGY_FALLBACK)
+        display_name = STRATEGY_DISPLAY.get(name, name)
         fig.add_trace(
             go.Scatter(
                 x=_ages(results),
                 y=[r.ending_total for r in results],
                 mode="lines",
-                name=name,
+                name=display_name,
                 line=dict(color=color, width=2),
-                hovertemplate="%{y:$,.0f}<extra>" + name + "</extra>",
+                hovertemplate="%{y:$,.0f}<extra>" + display_name + "</extra>",
             )
         )
     fig.update_layout(
@@ -345,7 +358,7 @@ def mc_fan_chart(mc) -> go.Figure:
         **_layout(
             f"Portfolio fan chart — Monte Carlo ({mc.n_runs} paths, real $)",
             xaxis=dict(title="Age"),
-            yaxis=dict(title="Portfolio balance", tickformat="$,.0f"),
+            yaxis=dict(type="log", title="Portfolio balance (log scale, real $)", tickformat="$,.0f"),
         )
     )
     return fig
