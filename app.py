@@ -30,10 +30,11 @@ STRATEGY_DISPLAY = {
     "custom": "Custom",
 }
 
-# Defaults for sidebar inputs. Loaded from scenarios/<DEFAULT_SCENARIO>.json if present;
-# fall back to the hard-coded baseline below. Editing the JSON is the supported way to
-# change startup defaults.
-_DEFAULT_SCENARIO_FILE = "scenarios/default.json"
+# Defaults for sidebar inputs. Loader prefers scenarios/default.local.json (gitignored —
+# put your personal scenario here) and falls back to scenarios/default.json (committed,
+# generic median-FIRE persona). Editing either JSON is the supported way to change startup
+# defaults; the in-app sidebar download/upload buttons let you save/swap others ad hoc.
+_DEFAULT_SCENARIO_FILES = ["scenarios/default.local.json", "scenarios/default.json"]
 _SIDEBAR_FALLBACK_DEFAULTS = {
     "initial_cash": 25_000,
     "initial_taxable": 834_843,
@@ -59,9 +60,10 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
 
 def _load_default_scenario() -> dict:
     import os
-    if not os.path.exists(_DEFAULT_SCENARIO_FILE):
+    path = next((p for p in _DEFAULT_SCENARIO_FILES if os.path.exists(p)), None)
+    if path is None:
         return dict(_SIDEBAR_FALLBACK_DEFAULTS)
-    with open(_DEFAULT_SCENARIO_FILE) as f:
+    with open(path) as f:
         loaded = _json.load(f)
     # Strip non-sidebar fields (strategy / custom_conversion are per-tab choices).
     for k in ("strategy", "custom_conversion"):

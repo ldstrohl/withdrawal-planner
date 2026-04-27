@@ -1,0 +1,23 @@
+{
+  "initial_cash": 20000,
+  "initial_taxable": 600000,
+  "taxable_basis": 450000,
+  "initial_traditional": 700000,
+  "initial_roth": 200000,
+  "roth_contributions": 80000,
+  "initial_hsa": 30000,
+  "target_spend": 60000,
+  "stock_return": 0.07,
+  "bond_return": 0.02,
+  "cash_return": 0.0,
+  "stock_allocation": 0.85,
+  "start_age": 42,
+  "horizon_years": 50,
+  "strategy": "bridge_guarded",
+  "custom_conversion": null,
+  "aca_mode": "cap",
+  "ss_annual_benefit": 28000,
+  "ss_claim_age": 67,
+  "income_streams": [],
+  "expense_streams": []
+}
