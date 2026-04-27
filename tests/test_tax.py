@@ -8,6 +8,8 @@ from planner.tax import (
     early_withdrawal_penalty,
     federal_tax,
     fpl_400_ceiling,
+    taxable_ss,
+    wa_ltcg_tax,
     zero_ltcg_ceiling,
 )
 
@@ -145,3 +147,96 @@ def test_lognormal_returns_reproducible():
     # Different paths produce different draws
     c = m.get(year_index=3, path_index=11)
     assert a != c
+
+
+# --- taxable_ss tests -------------------------------------------------------
+
+def test_taxable_ss_zero_benefit():
+    assert taxable_ss(0, 50_000, 10_000) == 0.0
+
+
+def test_taxable_ss_low_provisional_under_25k():
+    # provisional = 10_000 + 0 + 0.5 * 5_000 = 12_500 -> 0
+    assert taxable_ss(5_000, 10_000, 0) == 0.0
+
+
+def test_taxable_ss_mid_tier_50pct_cap():
+    # provisional = 20_000 + 0 + 0.5 * 20_000 = 30_000 -> between 25k and 34k
+    # taxable = min(0.5 * 20_000, 0.5 * (30_000 - 25_000)) = min(10_000, 2_500) = 2_500
+    result = taxable_ss(20_000, 20_000, 0)
+    assert approx(result, 2_500, tol=1)
+
+
+def test_taxable_ss_high_provisional_above_34k():
+    # SS = 30_000, other_ord = 60_000, ltcg = 0
+    # provisional = 60_000 + 0 + 15_000 = 75_000 > 34_000
+    # tier1 = min(0.5 * 30_000, 4_500) = 4_500
+    # tier2 = 0.85 * (75_000 - 34_000) = 0.85 * 41_000 = 34_850
+    # total = 39_350; cap = 0.85 * 30_000 = 25_500 -> returns 25_500
+    result = taxable_ss(30_000, 60_000, 0)
+    assert approx(result, 25_500, tol=1)
+
+
+def test_taxable_ss_85pct_cap_binds():
+    # Verify that at very high provisional income the 85% cap binds
+    result = taxable_ss(50_000, 200_000, 0)
+    assert approx(result, 0.85 * 50_000, tol=1)
+
+
+# --- wa_ltcg_tax tests -------------------------------------------------------
+
+def test_wa_ltcg_tax_below_threshold():
+    assert wa_ltcg_tax(100_000) == 0.0
+
+
+def test_wa_ltcg_tax_at_threshold():
+    assert wa_ltcg_tax(262_000) == 0.0
+
+
+def test_wa_ltcg_tax_above_threshold():
+    # $10k above threshold -> 10_000 * 0.07 = 700
+    assert approx(wa_ltcg_tax(272_000), 700.0, tol=0.01)
+
+
+# --- RMD table extension test -----------------------------------------------
+
+def test_rmd_table_age_110():
+    from planner.tax import required_min_distribution
+    # Should use divisor 3.5 (from extended table), not the old 6.4 fallback
+    rmd = required_min_distribution(350_000, age=110)
+    assert approx(rmd, 350_000 / 3.5, tol=1)
+
+
+# --- RMD excess cash re-credit smoke test -----------------------------------
+
+def test_rmd_excess_credits_cash():
+    """When forced RMD > gross need, the surplus should appear in cash."""
+    from planner.simulate import SimulationInputs, simulate
+
+    # start_age=70 so RMDs begin at age 73 (year 3). Use a large traditional balance
+    # and low spend so RMD overshoots gross need.
+    inputs = SimulationInputs(
+        start_age=70,
+        horizon_years=10,
+        initial_traditional=2_000_000,
+        initial_taxable=0,
+        taxable_basis=0,
+        initial_cash=0,
+        initial_roth=0,
+        initial_hsa=0,
+        target_spend=50_000,
+        ss_annual_benefit=0,
+        strategy="minimal_convert",
+    )
+    results = simulate(inputs)
+    rmd_years = [yr for yr in results if yr.plan.rmd_amount > 0]
+    assert len(rmd_years) > 0, "Expected RMD years"
+    # In any year where rmd_amount > gross_used, cash should have increased
+    found_surplus = False
+    for yr in rmd_years:
+        if yr.plan.rmd_amount > yr.plan.gross_used:
+            # surplus was re-credited; cash balance should be positive
+            assert yr.snapshot["cash"] > 0, f"Expected cash > 0 at age {yr.age}"
+            found_surplus = True
+            break
+    assert found_surplus, "Expected at least one year where RMD overshoots gross need"

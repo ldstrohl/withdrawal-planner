@@ -159,7 +159,7 @@ def aca_premium(
 
 # 2025 Medicare Part B + Part D base + IRMAA tiers (single filer).
 # IRMAA is based on MAGI from 2 years prior; for simplicity we use current-year MAGI.
-MEDICARE_BASE_ANNUAL = 2_096.40   # Part B base ~$174.70/mo * 12
+MEDICARE_BASE_ANNUAL = 2_220.00   # 2025: Part B base $185.00/mo * 12
 MEDICARE_PARTD_BASE = 480.0        # Part D base ~$40/mo * 12
 
 # (MAGI upper limit, total annual surcharge above base, Part B + Part D combined)
@@ -222,6 +222,9 @@ UNIFORM_LIFETIME_TABLE = {
     80: 20.2, 81: 19.4, 82: 18.5, 83: 17.7, 84: 16.8, 85: 16.0, 86: 15.2,
     87: 14.4, 88: 13.7, 89: 12.9, 90: 12.2, 91: 11.5, 92: 10.8, 93: 10.1,
     94: 9.5, 95: 8.9, 96: 8.4, 97: 7.8, 98: 7.3, 99: 6.8, 100: 6.4,
+    101: 6.0, 102: 5.6, 103: 5.2, 104: 4.9, 105: 4.6, 106: 4.3, 107: 4.1,
+    108: 3.9, 109: 3.7, 110: 3.5, 111: 3.4, 112: 3.3, 113: 3.1, 114: 3.0,
+    115: 2.9, 116: 2.8, 117: 2.7, 118: 2.5, 119: 2.3, 120: 2.0,
 }
 
 
@@ -229,5 +232,38 @@ def required_min_distribution(traditional_balance: float, age: int) -> float:
     """RMD on Traditional accounts. Returns 0 if age < 73 or no balance."""
     if age < 73 or traditional_balance <= 0:
         return 0.0
-    divisor = UNIFORM_LIFETIME_TABLE.get(age, 6.4)
+    divisor = UNIFORM_LIFETIME_TABLE.get(age, 2.0)
     return traditional_balance / divisor
+
+
+def taxable_ss(ss_benefit: float, other_ordinary_income: float, ltcg: float) -> float:
+    """IRS provisional-income test for SS taxation (single filer, 2025 thresholds, NOT inflation-indexed by IRS).
+
+    provisional = other_ordinary_income + ltcg + 0.5 * ss_benefit
+    Threshold 1: $25,000 — below this, none of SS is taxable.
+    Threshold 2: $34,000 — between, up to 50% of SS or 50% of (provisional - 25k), lesser.
+    Above $34,000 — up to 85% of SS, plus the 50% phase-in piece.
+    Returns dollars of SS that are added to ordinary taxable income.
+    """
+    if ss_benefit <= 0:
+        return 0.0
+    provisional = other_ordinary_income + ltcg + 0.5 * ss_benefit
+    if provisional <= 25_000:
+        return 0.0
+    if provisional <= 34_000:
+        return min(0.5 * ss_benefit, 0.5 * (provisional - 25_000))
+    # Above 34k: 85% of (provisional - 34k), plus the lesser of 50% SS or $4,500 (= 0.5*(34k-25k)),
+    # capped at 85% of total SS benefit.
+    tier2 = 0.85 * (provisional - 34_000)
+    tier1 = min(0.5 * ss_benefit, 4_500.0)
+    return min(tier1 + tier2, 0.85 * ss_benefit)
+
+
+WA_LTCG_THRESHOLD = 262_000.0   # 2024 indexed (real-dollar approximation)
+WA_LTCG_RATE = 0.07
+
+
+def wa_ltcg_tax(ltcg: float) -> float:
+    """Washington state 7% capital-gains tax on LTCG above $262k threshold."""
+    excess = max(ltcg - WA_LTCG_THRESHOLD, 0.0)
+    return excess * WA_LTCG_RATE

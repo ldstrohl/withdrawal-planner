@@ -19,6 +19,8 @@ from .tax import (
     early_withdrawal_penalty,
     federal_tax,
     fpl_400_ceiling,
+    taxable_ss,
+    wa_ltcg_tax,
     zero_ltcg_ceiling,
 )
 
@@ -49,6 +51,8 @@ class PlanResult:
     shortfall: float
     ss_income: float = 0.0
     rmd_amount: float = 0.0
+    state_tax: float = 0.0
+    gross_used: float = 0.0  # actual gross need for cash-flow (pre-RMD-forced bump)
 
 
 # --- conversion sizing ------------------------------------------------------
@@ -195,14 +199,17 @@ def plan_year(
 
         w, ltcg, shortfall = _fund_priority(portfolio, age, year, gross_need)
 
-        # Force-bump traditional withdrawal to satisfy RMD.
+        # Force-bump traditional withdrawal to satisfy RMD (capped at actual balance).
         if rmd_amount > w.traditional:
-            w.traditional = rmd_amount
+            w.traditional = min(rmd_amount, portfolio.traditional.balance)
 
+        # Only the taxable portion of SS enters ordinary income.
+        other_ord = conversion + w.traditional + w.hsa
+        ss_taxable = taxable_ss(ss_income, other_ord, ltcg)
         # Ordinary income = conversion + traditional withdrawals + non-qualified HSA distribution
         # (HSA non-medical pre-65 also incurs 20% penalty; we ignore HSA penalty for v1
         # since HSA is last-resort and the simulator should never reach it under reasonable inputs.)
-        ordinary_income = conversion + w.traditional + w.hsa + ss_income
+        ordinary_income = other_ord + ss_taxable
 
         tax = federal_tax(ordinary_income, ltcg, params)
         penalty = early_withdrawal_penalty(w.traditional, age)
@@ -212,7 +219,8 @@ def plan_year(
         else:
             healthcare = aca_premium(magi, params, aca_mode)
 
-        new_gross = effective_target + tax["total"] + penalty + healthcare["out_of_pocket"]
+        state_tax_amt = wa_ltcg_tax(ltcg)
+        new_gross = effective_target + tax["total"] + penalty + healthcare["out_of_pocket"] + state_tax_amt
 
         last = PlanResult(
             withdrawals=w,
@@ -228,6 +236,8 @@ def plan_year(
             shortfall=shortfall,
             ss_income=ss_income,
             rmd_amount=rmd_amount,
+            state_tax=state_tax_amt,
+            gross_used=gross_need,
         )
 
         if abs(new_gross - gross_need) < tol:

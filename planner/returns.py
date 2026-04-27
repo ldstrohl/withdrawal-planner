@@ -68,6 +68,11 @@ class LognormalReturns:
       - Cash:   mu=0.00, sigma=0.01
     Set sigma=0 for deterministic behavior.
 
+    mu is the **log-space** mean (location parameter). The arithmetic mean of (1 + return)
+    is exp(mu + sigma^2/2), so arithmetic real return ≈ exp(mu + sigma^2/2) − 1.
+    With mu_stocks=0.06 and sigma_stocks=0.18, arithmetic real ≈ exp(0.0762) − 1 ≈ 7.92%,
+    **not** 6%.
+
     `stock_bond_correlation` (typical US: -0.05 to +0.20) injected via 2x2 Cholesky.
 
     Reproducibility: `random.Random((seed, path_index, year_index))` makes draws

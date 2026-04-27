@@ -85,6 +85,17 @@ def _apply_action(portfolio: Portfolio, plan: PlanResult, year: int) -> None:
     portfolio.traditional.withdraw(w.traditional)
     portfolio.hsa.withdraw(w.hsa)
 
+    # Re-credit any RMD surplus back to cash.
+    # When rmd_amount > gross_need, w.traditional was force-bumped above what cash-flow
+    # required. The excess lands in cash (the retiree receives it, doesn't spend it yet).
+    gross_withdrawn = (
+        w.cash + w.taxable + w.roth_seasoned + w.roth_contributions
+        + w.roth_post60 + w.traditional + w.hsa
+    )
+    surplus = gross_withdrawn - plan.gross_used
+    if surplus > 0:
+        portfolio.cash.balance += surplus
+
     # Apply conversion: pull from Trad, add to Roth ladder rung
     if plan.conversion > 0:
         actually_converted = portfolio.traditional.withdraw(plan.conversion)
@@ -180,6 +191,7 @@ def summarize(results: List[YearResult]) -> dict:
     total_penalty = sum(r.plan.penalty for r in results)
     total_conversions = sum(r.plan.conversion for r in results)
     total_shortfall = sum(r.plan.shortfall for r in results)
+    total_state_tax = sum(r.plan.state_tax for r in results)
     last = results[-1]
     return {
         "ending_total": last.ending_total,
@@ -191,4 +203,5 @@ def summarize(results: List[YearResult]) -> dict:
         "total_penalty": total_penalty,
         "total_conversions": total_conversions,
         "total_shortfall": total_shortfall,
+        "total_state_tax": total_state_tax,
     }
