@@ -4,7 +4,7 @@ A `ReturnsModel` produces a year's real returns for (stocks, bonds, cash).
 Implementations:
   - `ConstantReturns`: deterministic flat rates (default for single-path simulation)
   - `LognormalReturns`: stochastic, used by Monte Carlo
-  - (future) `HistoricalPlayback`: Shiller-data resampling
+  - `HistoricalPlayback`: rolling-start replay of Shiller annual real returns
 
 Per-account growth is computed by combining the year's asset returns with each
 account's stock allocation. Cash uses its own rate.
@@ -12,10 +12,12 @@ account's stock allocation. Cash uses its own rate.
 
 from __future__ import annotations
 
+import csv
 import math
 import random
-from dataclasses import dataclass
-from typing import Protocol, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Optional, Protocol, Tuple
 
 
 @dataclass(frozen=True)
@@ -102,3 +104,76 @@ class LognormalReturns:
             bonds=math.exp(self.mu_bonds + self.sigma_bonds * z_b) - 1.0,
             cash=math.exp(self.mu_cash + self.sigma_cash * z_c) - 1.0,
         )
+
+
+# --- Historical playback -----------------------------------------------------
+
+DEFAULT_HISTORICAL_CSV = Path(__file__).parent.parent / "data" / "historical_real_returns.csv"
+
+
+def _load_historical_csv(path: Path) -> List[Tuple[int, float, float, float]]:
+    """Return [(year, real_stocks, real_bonds, real_cash), ...] sorted by year."""
+    rows: List[Tuple[int, float, float, float]] = []
+    with path.open() as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append((
+                int(r["year"]),
+                float(r["real_stocks"]),
+                float(r["real_bonds"]),
+                float(r["real_cash"]),
+            ))
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+@dataclass
+class HistoricalPlayback:
+    """Rolling-start replay of historical annual real returns.
+
+    Each `path_index` corresponds to a distinct start year; `get(year_index, path_index)`
+    returns the historical year `start_years[path_index] + year_index`.
+
+    Start years are filtered so each path has full `horizon_years` of data — start years
+    that would run off the end are dropped. With Shiller data 1928–2022 and a 60-year
+    horizon, valid starts are 1928..1963 → 36 paths. With a 30-year horizon, 1928..1993
+    → 66 paths. The Monte Carlo orchestrator should clamp `n_runs <= n_paths`.
+
+    Not stochastic (despite living in the MC tab) — the same start-year ordering replays
+    deterministically. The "MC" framing is a UX simplification.
+    """
+    horizon_years: int
+    start_year_floor: int = 1928
+    csv_path: Path = field(default_factory=lambda: DEFAULT_HISTORICAL_CSV)
+    _rows: List[Tuple[int, float, float, float]] = field(init=False, repr=False)
+    _by_year: dict[int, Tuple[float, float, float]] = field(init=False, repr=False)
+    start_years: List[int] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._rows = _load_historical_csv(self.csv_path)
+        self._by_year = {y: (s, b, c) for y, s, b, c in self._rows}
+        first_year = max(self.start_year_floor, self._rows[0][0])
+        last_year = self._rows[-1][0]
+        # Need years [Y, Y+1, ..., Y + horizon - 1] inclusive.
+        last_valid_start = last_year - self.horizon_years + 1
+        self.start_years = [y for y in range(first_year, last_valid_start + 1)
+                            if y in self._by_year]
+
+    @property
+    def n_paths(self) -> int:
+        return len(self.start_years)
+
+    @property
+    def coverage(self) -> Tuple[int, int]:
+        """First and last calendar year covered by the underlying dataset."""
+        return self._rows[0][0], self._rows[-1][0]
+
+    def get(self, year_index: int, path_index: int = 0) -> YearReturns:
+        if not self.start_years:
+            raise ValueError(
+                f"No valid start years (horizon={self.horizon_years} exceeds dataset)"
+            )
+        # Modulo so callers passing path_index >= n_paths don't crash; they get a recycled path.
+        start = self.start_years[path_index % len(self.start_years)]
+        s, b, c = self._by_year[start + year_index]
+        return YearReturns(stocks=s, bonds=b, cash=c)

@@ -12,7 +12,7 @@ import streamlit as st
 
 import charts
 from planner.montecarlo import run_monte_carlo
-from planner.returns import LognormalReturns
+from planner.returns import HistoricalPlayback, LognormalReturns
 from planner.simulate import SimulationInputs, simulate, summarize
 from planner.strategy import STRATEGY_DESCRIPTIONS, STRATEGY_PRESETS
 
@@ -54,8 +54,8 @@ def cached_simulate(inputs: SimulationInputs):
     return simulate(inputs)
 
 
-@st.cache_data(show_spinner="Running Monte Carlo...")
-def cached_mc(
+@st.cache_data(show_spinner="Running Monte Carlo (lognormal)...")
+def cached_mc_lognormal(
     inputs: SimulationInputs,
     n_runs: int,
     seed: int,
@@ -75,6 +75,16 @@ def cached_mc(
         stock_bond_correlation=rho,
     )
     return run_monte_carlo(inputs, returns_model=model, n_runs=n_runs)
+
+
+@st.cache_data(show_spinner="Running historical playback...")
+def cached_mc_historical(inputs: SimulationInputs, start_year_floor: int):
+    """Rolling-start replay of historical real returns. n_runs is determined by data coverage."""
+    model = HistoricalPlayback(
+        horizon_years=inputs.horizon_years,
+        start_year_floor=start_year_floor,
+    )
+    return run_monte_carlo(inputs, returns_model=model, n_runs=model.n_paths)
 
 
 # Streamlit ≥1.32 supports @st.fragment; older falls back to identity decorator.
@@ -294,8 +304,19 @@ def comparison_view(base: SimulationInputs) -> None:
         st.info("Select at least 2 strategies.")
         return
 
-    # C. Optional per-strategy MC checkbox
-    mc_compare = st.checkbox("Run Monte Carlo per strategy (slower)", value=False)
+    # C. Optional per-strategy MC checkbox + model choice
+    mc_cols = st.columns([2, 3])
+    with mc_cols[0]:
+        mc_compare = st.checkbox("Run Monte Carlo per strategy (slower)", value=False)
+    with mc_cols[1]:
+        mc_compare_model = st.radio(
+            "MC returns model",
+            options=["lognormal", "historical"],
+            format_func=lambda m: {"lognormal": "Lognormal (200 paths)", "historical": "Historical (rolling start)"}[m],
+            horizontal=True,
+            disabled=not mc_compare,
+            key="mc_compare_model",
+        )
 
     scenarios = {}
     for name in chosen:
@@ -306,31 +327,39 @@ def comparison_view(base: SimulationInputs) -> None:
         })
         scenarios[name] = cached_simulate(inputs)
 
-    # C. If mc_compare, run MC per strategy and collect success rates
-    mc_compare_seed = 42
-    mc_compare_sigma_s = 0.18
-    mc_compare_sigma_b = 0.07
-    mc_compare_sigma_c = 0.01
-    mc_compare_rho = 0.05
-
     success_rates: dict[str, float] = {}
+    mc_label = ""
     if mc_compare:
-        for name in chosen:
-            mc_inputs = SimulationInputs(**{
-                **base.__dict__,
-                "strategy": name,
-                "custom_conversion": custom_amount if name == "custom" else None,
-            })
-            mc_result = cached_mc(
-                inputs=mc_inputs,
-                n_runs=200,
-                seed=mc_compare_seed,
-                sigma_s=mc_compare_sigma_s,
-                sigma_b=mc_compare_sigma_b,
-                sigma_c=mc_compare_sigma_c,
-                rho=mc_compare_rho,
-            )
-            success_rates[name] = mc_result.success_rate
+        if mc_compare_model == "lognormal":
+            for name in chosen:
+                mc_inputs = SimulationInputs(**{
+                    **base.__dict__,
+                    "strategy": name,
+                    "custom_conversion": custom_amount if name == "custom" else None,
+                })
+                mc_result = cached_mc_lognormal(
+                    inputs=mc_inputs, n_runs=200, seed=42,
+                    sigma_s=0.18, sigma_b=0.07, sigma_c=0.01, rho=0.05,
+                )
+                success_rates[name] = mc_result.success_rate
+            mc_label = "Lognormal · 200 paths"
+        else:
+            preview = HistoricalPlayback(horizon_years=base.horizon_years)
+            if preview.n_paths == 0:
+                st.error(
+                    f"Horizon of {base.horizon_years} years exceeds the historical dataset "
+                    f"({preview.coverage[0]}–{preview.coverage[1]}). Switch to Lognormal or reduce horizon."
+                )
+            else:
+                for name in chosen:
+                    mc_inputs = SimulationInputs(**{
+                        **base.__dict__,
+                        "strategy": name,
+                        "custom_conversion": custom_amount if name == "custom" else None,
+                    })
+                    mc_result = cached_mc_historical(inputs=mc_inputs, start_year_floor=1928)
+                    success_rates[name] = mc_result.success_rate
+                mc_label = f"Historical · {preview.n_paths} sequences ({preview.start_years[0]}–{preview.start_years[-1]})"
 
     # Summary table
     rows = []
@@ -362,7 +391,7 @@ def comparison_view(base: SimulationInputs) -> None:
             textposition="auto",
         ))
         bar_fig.update_layout(
-            title="Monte Carlo success rate by strategy (n=200)",
+            title=f"Monte Carlo success rate by strategy ({mc_label})",
             xaxis_title="Strategy",
             yaxis_title="Success rate (%)",
             yaxis=dict(range=[0, 100]),
@@ -566,75 +595,93 @@ IRMAA exposure may be understated by approximately two years.
 @_fragment
 def monte_carlo_view(base: SimulationInputs) -> None:
     st.markdown("#### Monte Carlo simulation")
-    st.caption(
-        "Stochastic returns (lognormal). Means use the per-asset returns from the sidebar; "
-        "volatility (σ) is configurable here. Future: plug in historical-data playback "
-        "(Shiller resampling) or richer regime models via the `ReturnsModel` protocol."
+
+    model_choice = st.radio(
+        "Returns model",
+        options=["lognormal", "historical"],
+        format_func=lambda m: {
+            "lognormal": "Lognormal (synthetic, configurable σ)",
+            "historical": "Historical (Shiller annual real returns, rolling start)",
+        }[m],
+        horizontal=True,
+        key="mc_model_choice",
     )
 
-    # B. Strategy selector at the top of MC view
     strategy = st.selectbox(
         "Strategy",
         STRATEGY_PRESETS,
         format_func=lambda s: STRATEGY_DISPLAY.get(s, s),
         key="mc_strategy",
     )
-
-    cols = st.columns(2)
-    with cols[0]:
-        n_runs = st.number_input("Paths", value=1000, min_value=100, max_value=5000, step=100,
-                                 help="More paths = tighter percentile estimates, longer wait.")
-    with cols[1]:
-        seed = st.number_input("Random seed", value=42, step=1,
-                               help="Change to resample. Same seed reproduces same paths.")
-
-    # B. Wrap σ/correlation sliders in expander
-    with st.expander("Advanced: volatility parameters", expanded=False):
-        adv_cols = st.columns(2)
-        with adv_cols[0]:
-            sigma_s = st.slider("Stock σ", 0.0, 0.30, 0.18, 0.01,
-                                help="Stdev of log-returns. ~0.18 ≈ historical US large-cap real volatility.")
-        with adv_cols[1]:
-            sigma_b = st.slider("Bond σ", 0.0, 0.15, 0.07, 0.005,
-                                help="Stdev of log-returns. ~0.07 ≈ historical intermediate-bond real volatility.")
-        adv_cols2 = st.columns(2)
-        with adv_cols2[0]:
-            sigma_c = st.slider("Cash σ", 0.0, 0.05, 0.01, 0.005,
-                                help="Real cash volatility (mostly inflation surprise).")
-        with adv_cols2[1]:
-            rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05,
-                            help="Annual real-return correlation. Historical US: -0.05 to +0.20.")
-
-    # B. Build inputs with strategy override
     inputs = SimulationInputs(**{**base.__dict__, "strategy": strategy})
-    mc = cached_mc(
-        inputs=inputs,
-        n_runs=int(n_runs),
-        seed=int(seed),
-        sigma_s=float(sigma_s),
-        sigma_b=float(sigma_b),
-        sigma_c=float(sigma_c),
-        rho=float(rho),
-    )
+
+    if model_choice == "lognormal":
+        cols = st.columns(2)
+        with cols[0]:
+            n_runs = st.number_input("Paths", value=1000, min_value=100, max_value=5000, step=100,
+                                     help="More paths = tighter percentile estimates, longer wait.")
+        with cols[1]:
+            seed = st.number_input("Random seed", value=42, step=1,
+                                   help="Change to resample. Same seed reproduces same paths.")
+
+        with st.expander("Advanced: volatility parameters", expanded=False):
+            adv_cols = st.columns(2)
+            with adv_cols[0]:
+                sigma_s = st.slider("Stock σ", 0.0, 0.30, 0.18, 0.01,
+                                    help="Stdev of log-returns. ~0.18 ≈ historical US large-cap real volatility.")
+            with adv_cols[1]:
+                sigma_b = st.slider("Bond σ", 0.0, 0.15, 0.07, 0.005,
+                                    help="Stdev of log-returns. ~0.07 ≈ historical intermediate-bond real volatility.")
+            adv_cols2 = st.columns(2)
+            with adv_cols2[0]:
+                sigma_c = st.slider("Cash σ", 0.0, 0.05, 0.01, 0.005,
+                                    help="Real cash volatility (mostly inflation surprise).")
+            with adv_cols2[1]:
+                rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05,
+                                help="Annual real-return correlation. Historical US: -0.05 to +0.20.")
+
+        mc = cached_mc_lognormal(
+            inputs=inputs,
+            n_runs=int(n_runs),
+            seed=int(seed),
+            sigma_s=float(sigma_s),
+            sigma_b=float(sigma_b),
+            sigma_c=float(sigma_c),
+            rho=float(rho),
+        )
+        run_label = f"Lognormal · {int(n_runs)} paths"
+    else:
+        # Preview model to surface n_paths / horizon mismatch before running.
+        preview = HistoricalPlayback(horizon_years=inputs.horizon_years)
+        if preview.n_paths == 0:
+            st.error(
+                f"Horizon of {inputs.horizon_years} years exceeds the historical dataset "
+                f"({preview.coverage[0]}–{preview.coverage[1]}). Reduce horizon in the sidebar."
+            )
+            return
+        st.caption(
+            f"Replays {preview.n_paths} sequences with start years "
+            f"{preview.start_years[0]}–{preview.start_years[-1]} "
+            f"(data: {preview.coverage[0]}–{preview.coverage[1]}, real returns from Shiller's S&P + 10y bond series; cash held at 0% real)."
+        )
+        mc = cached_mc_historical(inputs=inputs, start_year_floor=1928)
+        run_label = f"Historical · {preview.n_paths} sequences ({preview.start_years[0]}–{preview.start_years[-1]})"
 
     kpis = charts.mc_success_kpis(mc)
     kpi_cols = st.columns(len(kpis))
     for col, (label, value) in zip(kpi_cols, kpis.items()):
         col.metric(label, value)
 
-    # B. Strategy caption near KPIs
-    st.caption(f"Strategy: {STRATEGY_DISPLAY.get(strategy, strategy)}")
+    st.caption(f"Strategy: {STRATEGY_DISPLAY.get(strategy, strategy)}  ·  {run_label}")
 
-    # D. Three-band success messaging
     if mc.success_rate < 0.80:
         st.warning(
             f"Success rate {mc.success_rate:.0%} is below 80% — sequence-of-returns risk is "
             f"meaningful for this plan. Consider lowering target spend or extending the bridge."
         )
     elif mc.success_rate < 0.95:
-        pct = mc.success_rate
         st.info(
-            f"Success rate {pct:.0%} — meaningful but not robust to severe sequences. "
+            f"Success rate {mc.success_rate:.0%} — meaningful but not robust to severe sequences. "
             f"Consider tightening spend or lengthening bridge."
         )
     else:

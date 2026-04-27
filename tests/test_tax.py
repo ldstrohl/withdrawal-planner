@@ -149,6 +149,38 @@ def test_lognormal_returns_reproducible():
     assert a != c
 
 
+def test_historical_playback_paths_and_replay():
+    from planner.returns import HistoricalPlayback
+    m = HistoricalPlayback(horizon_years=60)
+    # Shiller data ends 2022; floor 1928 -> valid starts 1928..1963 = 36
+    assert m.n_paths == 36
+    assert m.start_years[0] == 1928
+    assert m.start_years[-1] == 1963
+    # Replay is deterministic and indexed by start year offset
+    y3 = m.get(year_index=3, path_index=0)  # 1931 — historical depression year
+    assert y3.stocks < -0.30  # 1931 was -38%
+    # Same (year, path) repeats identically
+    assert m.get(0, 5) == m.get(0, 5)
+
+
+def test_historical_playback_horizon_too_long_no_paths():
+    from planner.returns import HistoricalPlayback
+    m = HistoricalPlayback(horizon_years=120)
+    assert m.n_paths == 0
+
+
+def test_historical_playback_in_montecarlo():
+    from planner.returns import HistoricalPlayback
+    from planner.montecarlo import run_monte_carlo
+    from planner.simulate import SimulationInputs
+    inputs = SimulationInputs(horizon_years=30)
+    m = HistoricalPlayback(horizon_years=30)
+    mc = run_monte_carlo(inputs, returns_model=m, n_runs=m.n_paths)
+    assert mc.n_runs == m.n_paths
+    assert 0.0 <= mc.success_rate <= 1.0
+    assert len(mc.p50_balance) == 30
+
+
 # --- taxable_ss tests -------------------------------------------------------
 
 def test_taxable_ss_zero_benefit():
