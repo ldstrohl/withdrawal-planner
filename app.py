@@ -27,8 +27,11 @@ STRATEGY_DISPLAY = {
     "custom": "Custom",
 }
 
-# Defaults for sidebar inputs (used for scenario state initialization)
-_SIDEBAR_DEFAULTS = {
+# Defaults for sidebar inputs. Loaded from scenarios/<DEFAULT_SCENARIO>.json if present;
+# fall back to the hard-coded baseline below. Editing the JSON is the supported way to
+# change startup defaults.
+_DEFAULT_SCENARIO_FILE = "scenarios/default.json"
+_SIDEBAR_FALLBACK_DEFAULTS = {
     "initial_cash": 25_000,
     "initial_taxable": 834_843,
     "taxable_basis": 570_659,
@@ -47,6 +50,27 @@ _SIDEBAR_DEFAULTS = {
     "ss_claim_age": 67,
     "aca_mode": "cap",
 }
+
+
+def _load_default_scenario() -> dict:
+    import os
+    if not os.path.exists(_DEFAULT_SCENARIO_FILE):
+        return dict(_SIDEBAR_FALLBACK_DEFAULTS)
+    with open(_DEFAULT_SCENARIO_FILE) as f:
+        loaded = _json.load(f)
+    # Strip non-sidebar fields (strategy / custom_conversion are per-tab choices).
+    for k in ("strategy", "custom_conversion"):
+        loaded.pop(k, None)
+    # Coerce numeric types stored as floats back to ints where the widget expects ints.
+    for k in ("initial_cash", "initial_taxable", "taxable_basis", "initial_traditional",
+              "initial_roth", "roth_contributions", "initial_hsa", "target_spend",
+              "start_age", "horizon_years", "ss_annual_benefit", "ss_claim_age"):
+        if k in loaded:
+            loaded[k] = int(loaded[k])
+    return {**_SIDEBAR_FALLBACK_DEFAULTS, **loaded}
+
+
+_SIDEBAR_DEFAULTS = _load_default_scenario()
 
 
 @st.cache_data
