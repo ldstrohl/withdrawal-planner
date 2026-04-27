@@ -61,6 +61,7 @@ class PlanResult:
 def _conversion_for_strategy(
     name: str,
     portfolio: Portfolio,
+    age: int,
     ltcg_estimate: float,
     params: TaxParams,
     custom_amount: Optional[float],
@@ -81,6 +82,22 @@ def _conversion_for_strategy(
         # Floor at standard deduction: filling std_ded is always free regardless of LTCG,
         # and keeps the conversion ladder fed during late-Phase-A high-gain-ratio years.
         target = max(min(ceil_ltcg, ceil_aca), params.standard_deduction)
+    elif name == "bridge_guarded":
+        # Like bridge_optimal but throttles conversion in down sequences. Caps the year's
+        # conversion at trad_balance / years_to_60, so the Trad backstop can't be drained
+        # faster than the bridge years remaining. Protects against the failure mode where
+        # bracket-sized conversions empty Trad before age 60 and leave nothing to draw on
+        # if the Roth ladder gap opens up. No std-ded floor — preserving Trad outranks
+        # capturing free conversion room.
+        ceil_ltcg = zero_ltcg_ceiling(ltcg_estimate, params)
+        ceil_aca = fpl_400_ceiling(params) - ltcg_estimate
+        bracket_target = max(min(ceil_ltcg, ceil_aca), params.standard_deduction)
+        if age < 60:
+            years_left = max(60 - age, 1)
+            reserve_cap = portfolio.traditional.balance / years_left
+            target = min(bracket_target, reserve_cap)
+        else:
+            target = bracket_target
     elif name == "custom":
         target = custom_amount or 0.0
     else:
@@ -194,7 +211,7 @@ def plan_year(
             else 0.0
         )
         conversion = _conversion_for_strategy(
-            strategy_name, portfolio, ltcg_est, params, custom_conversion
+            strategy_name, portfolio, age, ltcg_est, params, custom_conversion
         )
 
         w, ltcg, shortfall = _fund_priority(portfolio, age, year, gross_need)
@@ -250,12 +267,17 @@ def plan_year(
 
 # --- preset registry --------------------------------------------------------
 
-STRATEGY_PRESETS = ["bridge_optimal", "minimal_convert", "aggressive_convert", "custom"]
+STRATEGY_PRESETS = ["bridge_optimal", "bridge_guarded", "minimal_convert", "aggressive_convert", "custom"]
 
 STRATEGY_DESCRIPTIONS = {
     "bridge_optimal": (
         "Spend taxable + cash; convert Trad→Roth up to the lesser of (0% LTCG ceiling) and "
-        "(400% FPL ceiling) each year. The recommended default."
+        "(400% FPL ceiling) each year."
+    ),
+    "bridge_guarded": (
+        "Like bridge_optimal but caps each year's conversion at trad_balance ÷ years_to_60, "
+        "preventing the bracket target from draining Trad before the bridge ends. More "
+        "robust under bad sequences; trades some Roth-stacking upside for ladder-gap insurance."
     ),
     "minimal_convert": (
         "Convert only enough Trad→Roth to fill the standard deduction (~$15.7k)."

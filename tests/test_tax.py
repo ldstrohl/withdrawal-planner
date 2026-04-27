@@ -181,6 +181,36 @@ def test_historical_playback_in_montecarlo():
     assert len(mc.p50_balance) == 30
 
 
+def test_bridge_guarded_caps_conversion_in_pre60_years():
+    """At age 40 with $100k Trad, conversion must be <= $100k / (60-40) = $5k regardless of bracket target."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        initial_cash=20_000, initial_taxable=200_000, taxable_basis=200_000,
+        initial_traditional=100_000, initial_roth=0, initial_hsa=0,
+        target_spend=40_000, start_age=40, horizon_years=2,
+        strategy="bridge_guarded",
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(stocks=0, bonds=0, cash=0))
+    # year 0 (age 40): cap = 100k / 20 = 5k. Conversion <= 5k.
+    assert r[0].plan.conversion <= 5_000 + 1, f"Expected conversion <= ~5k, got {r[0].plan.conversion}"
+
+
+def test_bridge_guarded_relaxes_cap_post60():
+    """Post-60, no cap — should match bridge_optimal target sizing."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        initial_cash=20_000, initial_taxable=200_000, taxable_basis=200_000,
+        initial_traditional=100_000, initial_roth=0, initial_hsa=0,
+        target_spend=40_000, start_age=65, horizon_years=2,
+        strategy="bridge_guarded",
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(stocks=0, bonds=0, cash=0))
+    # Post-60 should hit bracket target (typically std_ded floor ~ 15.7k or higher).
+    assert r[0].plan.conversion >= 15_000, f"Expected post-60 conversion >= 15k, got {r[0].plan.conversion}"
+
+
 # --- taxable_ss tests -------------------------------------------------------
 
 def test_taxable_ss_zero_benefit():

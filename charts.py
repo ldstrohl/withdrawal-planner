@@ -27,6 +27,7 @@ PALETTE = {
 
 STRATEGY_DISPLAY = {
     "bridge_optimal": "Bridge optimal",
+    "bridge_guarded": "Bridge guarded",
     "minimal_convert": "Minimal convert",
     "aggressive_convert": "Aggressive convert",
     "custom": "Custom",
@@ -34,6 +35,7 @@ STRATEGY_DISPLAY = {
 
 STRATEGY_COLORS = {
     "bridge_optimal": "#3B82F6",      # blue
+    "bridge_guarded": "#0EA5E9",      # cyan
     "minimal_convert": "#10B981",     # green
     "aggressive_convert": "#F59E0B",  # amber
     "custom": "#A855F7",              # purple

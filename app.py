@@ -22,6 +22,7 @@ st.set_page_config(page_title="Withdrawal Planner", layout="wide", initial_sideb
 
 STRATEGY_DISPLAY = {
     "bridge_optimal": "Bridge optimal",
+    "bridge_guarded": "Bridge guarded",
     "minimal_convert": "Minimal convert",
     "aggressive_convert": "Aggressive convert",
     "custom": "Custom",
@@ -117,6 +118,36 @@ try:
 except AttributeError:
     def _fragment(f):
         return f
+
+
+def _pick_mc_path(mc, year_label_fn=None, key_prefix: str = "") -> int:
+    """Render a Worst/Median/Best/By-index radio. Returns the chosen path_index.
+
+    `mc` is the MCSummary; `year_label_fn(idx)` returns extra caption text (e.g. start year);
+    `key_prefix` namespaces the widget keys so two pickers can coexist on the same page.
+    """
+    options = ["Worst (most shortfall)", "Median ending", "Best ending", "By index"]
+    choice = st.radio("Pick path", options, horizontal=True, key=f"{key_prefix}path_choice")
+    if choice.startswith("Worst"):
+        idx = max(range(mc.n_runs), key=lambda i: mc.paths[i].total_shortfall)
+    elif choice.startswith("Median"):
+        sorted_pi = sorted(mc.paths, key=lambda p: p.ending_total)
+        idx = sorted_pi[len(sorted_pi) // 2].path_index
+    elif choice.startswith("Best"):
+        idx = max(range(mc.n_runs), key=lambda i: mc.paths[i].ending_total)
+    else:
+        idx = st.number_input(
+            "Path index", min_value=0, max_value=mc.n_runs - 1, value=0, step=1,
+            key=f"{key_prefix}path_idx",
+        )
+        idx = int(idx)
+    extra = year_label_fn(idx) if year_label_fn else ""
+    p = mc.paths[idx]
+    st.caption(
+        f"Path {idx}{extra}  ·  ending ${p.ending_total:,.0f}  ·  "
+        f"shortfall ${p.total_shortfall:,.0f}  ·  years funded {p.years_funded}"
+    )
+    return idx
 
 
 def render_sidebar() -> SimulationInputs:
@@ -432,6 +463,55 @@ def comparison_view(base: SimulationInputs) -> None:
     with cols[2]:
         st.plotly_chart(charts.compare_shortfall(scenarios), use_container_width=True)
 
+    # Side-by-side account composition (deterministic)
+    st.markdown("##### Account composition over time, per strategy (deterministic, sidebar returns)")
+    for name, results in scenarios.items():
+        fig = charts.balance_stack(results)
+        fig.update_layout(title=dict(text=f"{STRATEGY_DISPLAY.get(name, name)}: account balances"))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Inspect a single MC path under each strategy (only when mc_compare is on)
+    if mc_compare and success_rates and chosen:
+        st.markdown("##### Inspect a single Monte Carlo path under each strategy")
+        ref_strat = chosen[0]
+        ref_inputs = SimulationInputs(**{
+            **base.__dict__,
+            "strategy": ref_strat,
+            "custom_conversion": custom_amount if ref_strat == "custom" else None,
+        })
+        if mc_compare_model == "lognormal":
+            ref_mc = cached_mc_lognormal(
+                inputs=ref_inputs, n_runs=200, seed=42,
+                sigma_s=0.18, sigma_b=0.07, sigma_c=0.01, rho=0.05,
+            )
+            picker_model = LognormalReturns(
+                mu_stocks=ref_inputs.stock_return, sigma_stocks=0.18,
+                mu_bonds=ref_inputs.bond_return, sigma_bonds=0.07,
+                mu_cash=ref_inputs.cash_return, sigma_cash=0.01,
+                seed=42, stock_bond_correlation=0.05,
+            )
+            year_label_fn = lambda i: ""
+        else:
+            ref_mc = cached_mc_historical(inputs=ref_inputs, start_year_floor=1928)
+            picker_model = HistoricalPlayback(horizon_years=ref_inputs.horizon_years)
+            year_label_fn = lambda i: f" (start year {picker_model.start_years[i]})"
+
+        idx = _pick_mc_path(ref_mc, year_label_fn, key_prefix="cmp_")
+        for name in chosen:
+            inp_strat = SimulationInputs(**{
+                **base.__dict__,
+                "strategy": name,
+                "custom_conversion": custom_amount if name == "custom" else None,
+            })
+            single = simulate(inp_strat, returns_model=picker_model, path_index=idx)
+            fig = charts.balance_stack(single)
+            short_total = sum(r.plan.shortfall for r in single)
+            fig.update_layout(
+                title=dict(text=f"{STRATEGY_DISPLAY.get(name, name)}: account balances on this path"
+                                + (f" — shortfall ${short_total:,.0f}" if short_total > 0 else ""))
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
 
 def inputs_summary_view(base: SimulationInputs) -> None:
     st.markdown("##### Echoed parameters")
@@ -674,6 +754,15 @@ def monte_carlo_view(base: SimulationInputs) -> None:
             rho=float(rho),
         )
         run_label = f"Lognormal · {int(n_runs)} paths"
+        # Reconstruct an equivalent model for ad-hoc single-path replay below
+        # (LognormalReturns is stateless given its params + seed, so this is identical to what cached_mc used).
+        path_model = LognormalReturns(
+            mu_stocks=inputs.stock_return, sigma_stocks=float(sigma_s),
+            mu_bonds=inputs.bond_return, sigma_bonds=float(sigma_b),
+            mu_cash=inputs.cash_return, sigma_cash=float(sigma_c),
+            seed=int(seed), stock_bond_correlation=float(rho),
+        )
+        year_label_fn = None
     else:
         # Preview model to surface n_paths / horizon mismatch before running.
         preview = HistoricalPlayback(horizon_years=inputs.horizon_years)
@@ -690,6 +779,8 @@ def monte_carlo_view(base: SimulationInputs) -> None:
         )
         mc = cached_mc_historical(inputs=inputs, start_year_floor=1928)
         run_label = f"Historical · {preview.n_paths} sequences ({preview.start_years[0]}–{preview.start_years[-1]})"
+        path_model = preview
+        year_label_fn = lambda i: f" (start year {preview.start_years[i]})"
 
     kpis = charts.mc_success_kpis(mc)
     kpi_cols = st.columns(len(kpis))
@@ -712,6 +803,13 @@ def monte_carlo_view(base: SimulationInputs) -> None:
         st.success(f"Success rate {mc.success_rate:.0%} — plan is robust to historical-style volatility.")
 
     st.plotly_chart(charts.mc_fan_chart(mc), use_container_width=True)
+
+    st.markdown("##### Inspect a single path")
+    idx = _pick_mc_path(mc, year_label_fn, key_prefix="mc_")
+    single = simulate(inputs, returns_model=path_model, path_index=idx)
+    fig = charts.balance_stack(single)
+    fig.update_layout(title=dict(text=f"Account balances on this path — {STRATEGY_DISPLAY.get(strategy, strategy)}"))
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # --- main ----------------------------------------------------------------
