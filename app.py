@@ -5,6 +5,9 @@ Run: streamlit run app.py
 
 from __future__ import annotations
 
+import json as _json
+import dataclasses as _dc
+
 import streamlit as st
 
 import charts
@@ -22,6 +25,27 @@ STRATEGY_DISPLAY = {
     "minimal_convert": "Minimal convert",
     "aggressive_convert": "Aggressive convert",
     "custom": "Custom",
+}
+
+# Defaults for sidebar inputs (used for scenario state initialization)
+_SIDEBAR_DEFAULTS = {
+    "initial_cash": 25_000,
+    "initial_taxable": 834_843,
+    "taxable_basis": 570_659,
+    "initial_traditional": 837_547,
+    "initial_roth": 327_610,
+    "roth_contributions": 0,
+    "initial_hsa": 26_000,
+    "target_spend": 80_000,
+    "stock_return": 0.07,
+    "bond_return": 0.02,
+    "cash_return": 0.0,
+    "stock_allocation": 0.85,
+    "start_age": 35,
+    "horizon_years": 60,
+    "ss_annual_benefit": 0,
+    "ss_claim_age": 67,
+    "aca_mode": "cap",
 }
 
 
@@ -62,52 +86,119 @@ except AttributeError:
 
 
 def render_sidebar() -> SimulationInputs:
+    # Initialize session state defaults so widgets can use key= only (no value=)
+    for k, v in _SIDEBAR_DEFAULTS.items():
+        st.session_state.setdefault(f"scn_{k}", v)
+
+    # G. Scenario save/load — top of sidebar
+    with st.sidebar.expander("Scenario (save / load)", expanded=False):
+        uploaded = st.file_uploader("Load JSON", type="json", key="scenario_upload")
+        if uploaded is not None:
+            data = _json.load(uploaded)
+            for k, v in data.items():
+                if f"scn_{k}" in st.session_state or k in _SIDEBAR_DEFAULTS:
+                    st.session_state[f"scn_{k}"] = v
+            st.success("Scenario loaded — adjust below if needed.")
+
     st.sidebar.markdown("### Initial balances (real $)")
-    cash = st.sidebar.number_input("Cash", value=25_000, step=1_000)
-    taxable = st.sidebar.number_input("Taxable brokerage", value=834_843, step=10_000)
-    basis = st.sidebar.number_input("Taxable cost basis", value=570_659, step=10_000)
-    traditional = st.sidebar.number_input("Traditional 401k / IRA", value=837_547, step=10_000)
-    roth = st.sidebar.number_input("Roth IRA", value=327_610, step=10_000)
-    roth_contrib = st.sidebar.number_input("...of which is direct contributions", value=0, step=1_000,
-                                            help="Roth contributions can be withdrawn anytime tax/penalty free.")
-    hsa = st.sidebar.number_input("HSA", value=26_000, step=1_000)
+    cash = st.sidebar.number_input("Cash", step=1_000, key="scn_initial_cash")
+    taxable = st.sidebar.number_input("Taxable brokerage", step=10_000, key="scn_initial_taxable")
+    basis = st.sidebar.number_input("Taxable cost basis", step=10_000, key="scn_taxable_basis")
+    traditional = st.sidebar.number_input("Traditional 401k / IRA", step=10_000, key="scn_initial_traditional")
+    roth = st.sidebar.number_input("Roth IRA", step=10_000, key="scn_initial_roth")
+    roth_contrib = st.sidebar.number_input(
+        "...of which is direct contributions", step=1_000,
+        key="scn_roth_contributions",
+        help="Roth contributions can be withdrawn anytime tax/penalty free.",
+    )
+    hsa = st.sidebar.number_input("HSA", step=1_000, key="scn_initial_hsa")
 
     st.sidebar.markdown("### Spending")
-    target = st.sidebar.number_input("Target net annual spend (real $)", value=80_000, step=1_000)
+    target = st.sidebar.number_input("Target net annual spend (real $)", step=1_000, key="scn_target_spend")
 
-    st.sidebar.markdown("### Real returns by asset class")
-    stock_return = st.sidebar.slider("Stocks", min_value=0.0, max_value=0.12, value=0.07, step=0.005, format="%.3f",
-                                     help="Long-run real (after-inflation) total return on equities.")
-    bond_return = st.sidebar.slider("Bonds", min_value=-0.02, max_value=0.06, value=0.02, step=0.005, format="%.3f",
-                                    help="Long-run real total return on intermediate bonds.")
-    cash_return = st.sidebar.slider("Cash", min_value=-0.02, max_value=0.04, value=0.0, step=0.005, format="%.3f",
-                                    help="Real return on cash (often near 0 after inflation).")
-    stock_alloc = st.sidebar.slider("Stock allocation (all investment accounts)",
-                                    min_value=0.0, max_value=1.0, value=0.85, step=0.05,
-                                    help="Fraction of each tax-advantaged + taxable account held in stocks vs bonds. Cash sits separately.")
+    # A. Collapse "Real returns by asset class"
+    with st.sidebar.expander("Real returns by asset class", expanded=False):
+        stock_return = st.slider(
+            "Stocks", min_value=0.0, max_value=0.12, step=0.005, format="%.3f",
+            key="scn_stock_return",
+            help="Long-run real (after-inflation) total return on equities.",
+        )
+        bond_return = st.slider(
+            "Bonds", min_value=-0.02, max_value=0.06, step=0.005, format="%.3f",
+            key="scn_bond_return",
+            help="Long-run real total return on intermediate bonds.",
+        )
+        cash_return = st.slider(
+            "Cash", min_value=-0.02, max_value=0.04, step=0.005, format="%.3f",
+            key="scn_cash_return",
+            help="Real return on cash (often near 0 after inflation).",
+        )
+        stock_alloc = st.slider(
+            "Stock allocation (all investment accounts)",
+            min_value=0.0, max_value=1.0, step=0.05,
+            key="scn_stock_allocation",
+            help="Fraction of each tax-advantaged + taxable account held in stocks vs bonds. Cash sits separately.",
+        )
 
     st.sidebar.markdown("### Horizon")
-    start_age = st.sidebar.number_input("Retirement age", value=35, step=1)
-    horizon = st.sidebar.number_input("Years to simulate", value=60, step=1)
+    start_age = st.sidebar.number_input("Retirement age", step=1, key="scn_start_age")
+    horizon = st.sidebar.number_input("Years to simulate", step=1, key="scn_horizon_years")
 
-    st.sidebar.markdown("### Social Security")
-    ss_benefit = st.sidebar.number_input("Annual SS benefit (real $)", value=0, step=1_000,
-        help="Estimated annual benefit in today's dollars. Use ssa.gov estimator. Set 0 to disable.")
-    ss_claim = st.sidebar.number_input("SS claim age", value=67, min_value=62, max_value=70, step=1,
-        help="62=earliest, 67=full retirement age, 70=max delay.")
+    # A. Collapse "Social Security"
+    with st.sidebar.expander("Social Security", expanded=False):
+        ss_benefit = st.number_input(
+            "Annual SS benefit (real $)", step=1_000,
+            key="scn_ss_annual_benefit",
+            help="Estimated annual benefit in today's dollars. Use ssa.gov estimator. Set 0 to disable.",
+        )
+        ss_claim = st.number_input(
+            "SS claim age", min_value=62, max_value=70, step=1,
+            key="scn_ss_claim_age",
+            help="62=earliest, 67=full retirement age, 70=max delay.",
+        )
 
     st.sidebar.markdown("### ACA assumption")
     aca_mode = st.sidebar.radio(
         "Subsidy schedule",
         options=["cap", "cliff"],
         format_func=lambda m: {"cap": "8.5% cap (IRA-extended)", "cliff": "Cliff at 400% FPL"}[m],
-        index=0,
+        key="scn_aca_mode",
         help=(
             "IRA-extended (cap): premium contribution capped at 8.5% of MAGI even above "
             "400% FPL — current law through 2025. Cliff: subsidies vanish entirely above "
             "400% FPL. Use 'cliff' for conservative planning if you expect the IRA "
             "expansion to lapse."
         ),
+    )
+
+    # G. Download button for scenario save
+    inputs_dict = {
+        k: v for k, v in _dc.asdict(SimulationInputs(
+            initial_cash=float(cash),
+            initial_taxable=float(taxable),
+            taxable_basis=float(basis),
+            initial_traditional=float(traditional),
+            initial_roth=float(roth),
+            roth_contributions=float(roth_contrib),
+            initial_hsa=float(hsa),
+            target_spend=float(target),
+            stock_return=float(stock_return),
+            bond_return=float(bond_return),
+            cash_return=float(cash_return),
+            stock_allocation=float(stock_alloc),
+            start_age=int(start_age),
+            horizon_years=int(horizon),
+            aca_mode=aca_mode,
+            ss_annual_benefit=float(ss_benefit),
+            ss_claim_age=int(ss_claim),
+        )).items()
+        if k != "params"
+    }
+    st.sidebar.download_button(
+        "Save scenario JSON",
+        data=_json.dumps(inputs_dict, indent=2),
+        file_name="scenario.json",
+        mime="application/json",
     )
 
     return SimulationInputs(
@@ -203,6 +294,9 @@ def comparison_view(base: SimulationInputs) -> None:
         st.info("Select at least 2 strategies.")
         return
 
+    # C. Optional per-strategy MC checkbox
+    mc_compare = st.checkbox("Run Monte Carlo per strategy (slower)", value=False)
+
     scenarios = {}
     for name in chosen:
         inputs = SimulationInputs(**{
@@ -212,11 +306,37 @@ def comparison_view(base: SimulationInputs) -> None:
         })
         scenarios[name] = cached_simulate(inputs)
 
+    # C. If mc_compare, run MC per strategy and collect success rates
+    mc_compare_seed = 42
+    mc_compare_sigma_s = 0.18
+    mc_compare_sigma_b = 0.07
+    mc_compare_sigma_c = 0.01
+    mc_compare_rho = 0.05
+
+    success_rates: dict[str, float] = {}
+    if mc_compare:
+        for name in chosen:
+            mc_inputs = SimulationInputs(**{
+                **base.__dict__,
+                "strategy": name,
+                "custom_conversion": custom_amount if name == "custom" else None,
+            })
+            mc_result = cached_mc(
+                inputs=mc_inputs,
+                n_runs=200,
+                seed=mc_compare_seed,
+                sigma_s=mc_compare_sigma_s,
+                sigma_b=mc_compare_sigma_b,
+                sigma_c=mc_compare_sigma_c,
+                rho=mc_compare_rho,
+            )
+            success_rates[name] = mc_result.success_rate
+
     # Summary table
     rows = []
     for name, results in scenarios.items():
         s = summarize(results)
-        rows.append({
+        row = {
             "Strategy": STRATEGY_DISPLAY.get(name, name),
             "Ending (real $)": f"${s['ending_total']:,.0f}",
             "Years funded": s["years_funded"],
@@ -225,9 +345,29 @@ def comparison_view(base: SimulationInputs) -> None:
             "Penalty": f"${s['total_penalty']:,.0f}",
             "Conversions total": f"${s['total_conversions']:,.0f}",
             "Shortfall": f"${s['total_shortfall']:,.0f}",
-        })
+        }
+        if mc_compare:
+            row["Success rate"] = f"{success_rates.get(name, 0.0):.0%}"
+        rows.append(row)
     st.markdown("##### Lifetime summary")
     st.dataframe(rows, hide_index=True, use_container_width=True)
+
+    # C. Success-rate bar chart when mc_compare is on
+    if mc_compare and success_rates:
+        import plotly.graph_objects as go
+        bar_fig = go.Figure(go.Bar(
+            x=[STRATEGY_DISPLAY.get(n, n) for n in success_rates],
+            y=[v * 100 for v in success_rates.values()],
+            text=[f"{v:.0%}" for v in success_rates.values()],
+            textposition="auto",
+        ))
+        bar_fig.update_layout(
+            title="Monte Carlo success rate by strategy (n=200)",
+            xaxis_title="Strategy",
+            yaxis_title="Success rate (%)",
+            yaxis=dict(range=[0, 100]),
+        )
+        st.plotly_chart(bar_fig, use_container_width=True)
 
     st.plotly_chart(charts.compare_balance_trajectory(scenarios), use_container_width=True)
 
@@ -258,6 +398,9 @@ def inputs_summary_view(base: SimulationInputs) -> None:
         ("Stock allocation", f"{base.stock_allocation:.0%}"),
         ("Start age", base.start_age),
         ("Horizon", f"{base.horizon_years} years"),
+        # F. SS fields added after Horizon
+        ("SS benefit", f"${base.ss_annual_benefit:,.0f}"),
+        ("SS claim age", base.ss_claim_age),
         ("ACA mode", base.aca_mode),
         ("Tax params", base.params.label),
     ]
@@ -271,8 +414,10 @@ def inputs_summary_view(base: SimulationInputs) -> None:
         "- Growth is applied at the **start** of each year, then withdrawal/conversion happens.\n"
         "- 10% early-withdrawal penalty applies to Traditional withdrawals before age 60 (proxy for 59.5).\n"
         "- HSA non-medical withdrawals are modeled as taxable income; the additional 20% pre-65 penalty is **not** modeled (HSA is last-resort here, so impact is small in well-formed plans).\n"
-        "- WA state has no income tax; the 7% capital gains tax above $262k of LTCG is **not** modeled (irrelevant at this draw rate).\n"
-        "- ACA premium model uses the IRA-expanded sliding-scale schedule (or 400% FPL cliff) on a benchmark $8k/yr unsubsidized premium."
+        "- WA state has no income tax. The 7% capital-gains tax above $262k LTCG **is** modeled (state_tax field on PlanResult; lifetime sum in summary).\n"
+        "- ACA premium model uses the IRA-expanded sliding-scale schedule (or 400% FPL cliff) on a benchmark $8k/yr unsubsidized premium.\n"
+        "- Social Security is taxed using the IRS provisional-income test (0/50/85% inclusion) — not the simplified 100% inclusion.\n"
+        "- Medicare IRMAA surcharge uses **current-year** MAGI (IRS actually uses MAGI from 2 years prior — simplification understates volatility-year IRMAA by ~2 years)."
     )
 
 
@@ -369,6 +514,51 @@ When you take capital gains and do a Roth conversion in the same year, the conve
   subsidy (cliff). Toggle in the sidebar.
 - **Roth ladder seasoning**: 5 years from year of conversion. The simulator FIFOs from
   oldest seasoned rung first.
+
+---
+
+### Stochastic returns (Monte Carlo)
+
+The Monte Carlo engine models each year's real return using a lognormal distribution applied
+to `(1 + real_return)` for each asset class (stocks, bonds, cash), with a stock/bond
+correlation parameter. Each path runs the full withdrawal/conversion simulation; success rate
+is the fraction of 1,000 paths that reach year `horizon_years` without a funding shortfall.
+The fan chart shows the 10th/25th/50th/75th/90th percentile total-portfolio balance across all
+paths; the fan widens over time because terminal-balance variance compounds roughly with
+√(years), amplifying early return shocks all the way to the end of the horizon.
+
+---
+
+### Income streams
+
+**Social Security:** The claim-age tradeoff is significant — claiming at 62 yields roughly
+70% of the full retirement age (FRA) benefit, while delaying to 70 produces roughly 124%.
+The simulator applies the SS benefit starting at your chosen claim age and taxes it using
+the IRS provisional-income test: 0% inclusion below the first threshold, 50% inclusion in
+the middle band, and 85% inclusion above the upper threshold — not the simplified 100%
+assumption that overstates your tax liability.
+
+**Required Minimum Distributions (RMDs):** Starting at age 73, the IRS requires a minimum
+annual withdrawal from Traditional accounts, sized by the IRS Uniform Lifetime Table divisor
+applied to the prior year-end balance. If the forced RMD exceeds the year's net spending
+need, the surplus is treated as excess cash and parked in the cash account rather than wasted.
+
+---
+
+### Healthcare lifecycle
+
+**Pre-65 ACA:** The premium tax credit reduces your benchmark unsubsidized premium based
+on your MAGI as a percent of the federal poverty line. Under the IRA expansion (current law),
+your contribution is capped at 8.5% of MAGI even above 400% FPL; under the cliff schedule,
+subsidies vanish entirely above 400% FPL. The subsidy schedule is piecewise: 0% contribution
+at 150% FPL, rising linearly to 8.5% at 400% FPL and above. MAGI-heavy Roth conversion years
+can sharply increase your premium.
+
+**Post-65 Medicare + IRMAA:** Base Part B + Part D premiums are added to healthcare OOP
+starting at age 65. Above income thresholds, the Income-Related Monthly Adjustment Amount
+(IRMAA) adds a surcharge in discrete tiers based on MAGI — the simulator uses current-year
+MAGI as a simplification; IRS actually uses MAGI from two years prior, so volatility-year
+IRMAA exposure may be understated by approximately two years.
 """
     )
 
@@ -382,30 +572,43 @@ def monte_carlo_view(base: SimulationInputs) -> None:
         "(Shiller resampling) or richer regime models via the `ReturnsModel` protocol."
     )
 
-    cols = st.columns(4)
+    # B. Strategy selector at the top of MC view
+    strategy = st.selectbox(
+        "Strategy",
+        STRATEGY_PRESETS,
+        format_func=lambda s: STRATEGY_DISPLAY.get(s, s),
+        key="mc_strategy",
+    )
+
+    cols = st.columns(2)
     with cols[0]:
         n_runs = st.number_input("Paths", value=1000, min_value=100, max_value=5000, step=100,
                                  help="More paths = tighter percentile estimates, longer wait.")
     with cols[1]:
         seed = st.number_input("Random seed", value=42, step=1,
                                help="Change to resample. Same seed reproduces same paths.")
-    with cols[2]:
-        sigma_s = st.slider("Stock σ", 0.0, 0.30, 0.18, 0.01,
-                            help="Stdev of log-returns. ~0.18 ≈ historical US large-cap real volatility.")
-    with cols[3]:
-        sigma_b = st.slider("Bond σ", 0.0, 0.15, 0.07, 0.005,
-                            help="Stdev of log-returns. ~0.07 ≈ historical intermediate-bond real volatility.")
 
-    cols2 = st.columns(2)
-    with cols2[0]:
-        sigma_c = st.slider("Cash σ", 0.0, 0.05, 0.01, 0.005,
-                            help="Real cash volatility (mostly inflation surprise).")
-    with cols2[1]:
-        rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05,
-                        help="Annual real-return correlation. Historical US: -0.05 to +0.20.")
+    # B. Wrap σ/correlation sliders in expander
+    with st.expander("Advanced: volatility parameters", expanded=False):
+        adv_cols = st.columns(2)
+        with adv_cols[0]:
+            sigma_s = st.slider("Stock σ", 0.0, 0.30, 0.18, 0.01,
+                                help="Stdev of log-returns. ~0.18 ≈ historical US large-cap real volatility.")
+        with adv_cols[1]:
+            sigma_b = st.slider("Bond σ", 0.0, 0.15, 0.07, 0.005,
+                                help="Stdev of log-returns. ~0.07 ≈ historical intermediate-bond real volatility.")
+        adv_cols2 = st.columns(2)
+        with adv_cols2[0]:
+            sigma_c = st.slider("Cash σ", 0.0, 0.05, 0.01, 0.005,
+                                help="Real cash volatility (mostly inflation surprise).")
+        with adv_cols2[1]:
+            rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05,
+                            help="Annual real-return correlation. Historical US: -0.05 to +0.20.")
 
+    # B. Build inputs with strategy override
+    inputs = SimulationInputs(**{**base.__dict__, "strategy": strategy})
     mc = cached_mc(
-        inputs=base,
+        inputs=inputs,
         n_runs=int(n_runs),
         seed=int(seed),
         sigma_s=float(sigma_s),
@@ -419,12 +622,22 @@ def monte_carlo_view(base: SimulationInputs) -> None:
     for col, (label, value) in zip(kpi_cols, kpis.items()):
         col.metric(label, value)
 
+    # B. Strategy caption near KPIs
+    st.caption(f"Strategy: {STRATEGY_DISPLAY.get(strategy, strategy)}")
+
+    # D. Three-band success messaging
     if mc.success_rate < 0.80:
         st.warning(
             f"Success rate {mc.success_rate:.0%} is below 80% — sequence-of-returns risk is "
             f"meaningful for this plan. Consider lowering target spend or extending the bridge."
         )
-    elif mc.success_rate >= 0.95:
+    elif mc.success_rate < 0.95:
+        pct = mc.success_rate
+        st.info(
+            f"Success rate {pct:.0%} — meaningful but not robust to severe sequences. "
+            f"Consider tightening spend or lengthening bridge."
+        )
+    else:
         st.success(f"Success rate {mc.success_rate:.0%} — plan is robust to historical-style volatility.")
 
     st.plotly_chart(charts.mc_fan_chart(mc), use_container_width=True)
