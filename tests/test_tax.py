@@ -93,3 +93,19 @@ def test_zero_ltcg_ceiling_matches_year1_conversion_size():
 
 def test_fpl_400_ceiling():
     assert fpl_400_ceiling() == 4 * TAX_PARAMS_2026.fpl_single
+
+
+def test_rmd_below_age_73_is_zero():
+    from planner.tax import required_min_distribution
+    assert required_min_distribution(1_000_000, age=72) == 0.0
+
+
+def test_rmd_at_age_73():
+    from planner.tax import required_min_distribution
+    rmd = required_min_distribution(1_000_000, age=73)
+    assert approx(rmd, 1_000_000 / 26.5, tol=1)
+
+
+def test_rmd_grows_with_age():
+    from planner.tax import required_min_distribution
+    assert required_min_distribution(500_000, age=85) > required_min_distribution(500_000, age=73)

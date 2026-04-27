@@ -17,7 +17,7 @@ from typing import List, Optional
 from .accounts import Cash, HSA, Portfolio, RothIRA, Taxable, TraditionalIRA
 from .returns import ConstantReturns, ReturnsModel
 from .strategy import PlanResult, plan_year
-from .tax import TAX_PARAMS_2026, TaxParams
+from .tax import TAX_PARAMS_2026, TaxParams, required_min_distribution
 
 
 @dataclass
@@ -54,6 +54,8 @@ class SimulationInputs:
     custom_conversion: Optional[float] = None
     aca_mode: str = "cap"
     params: TaxParams = field(default_factory=lambda: TAX_PARAMS_2026)
+    ss_annual_benefit: float = 0.0
+    ss_claim_age: int = 67
 
 
 def build_portfolio(inputs: SimulationInputs) -> Portfolio:
@@ -118,6 +120,8 @@ def simulate(
         portfolio.apply_growth(year_returns)
 
         # 2. Plan the year.
+        ss = inputs.ss_annual_benefit if age >= inputs.ss_claim_age else 0.0
+        rmd = required_min_distribution(portfolio.traditional.balance, age)
         plan = plan_year(
             portfolio=portfolio,
             age=age,
@@ -127,6 +131,8 @@ def simulate(
             params=inputs.params,
             aca_mode=inputs.aca_mode,
             custom_conversion=inputs.custom_conversion,
+            ss_income=ss,
+            rmd_amount=rmd,
         )
 
         # 3+4. Apply.
