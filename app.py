@@ -103,7 +103,7 @@ def kpi_row(results, summary: dict) -> None:
     cols[0].metric("Years funded", summary.get("years_funded", 0))
     cols[1].metric("Ending balance (real $)", f"${summary.get('ending_total', 0):,.0f}")
     cols[2].metric("Lifetime federal tax", f"${summary.get('total_federal_tax', 0):,.0f}")
-    cols[3].metric("Lifetime ACA OOP", f"${summary.get('total_aca_oop', 0):,.0f}")
+    cols[3].metric("Lifetime healthcare OOP", f"${summary.get('total_healthcare_oop', 0):,.0f}")
     cols[4].metric(
         "Penalty paid",
         f"${summary.get('total_penalty', 0):,.0f}",
@@ -188,7 +188,7 @@ def comparison_view(base: SimulationInputs) -> None:
             "Ending (real $)": f"${s['ending_total']:,.0f}",
             "Years funded": s["years_funded"],
             "Fed tax": f"${s['total_federal_tax']:,.0f}",
-            "ACA OOP": f"${s['total_aca_oop']:,.0f}",
+            "Healthcare OOP": f"${s['total_healthcare_oop']:,.0f}",
             "Penalty": f"${s['total_penalty']:,.0f}",
             "Conversions total": f"${s['total_conversions']:,.0f}",
             "Shortfall": f"${s['total_shortfall']:,.0f}",

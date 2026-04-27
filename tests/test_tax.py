@@ -93,3 +93,15 @@ def test_zero_ltcg_ceiling_matches_year1_conversion_size():
 
 def test_fpl_400_ceiling():
     assert fpl_400_ceiling() == 4 * TAX_PARAMS_2026.fpl_single
+
+
+def test_medicare_irmaa_tiers():
+    from planner.tax import medicare_premium
+    out = medicare_premium(magi=80_000, age=66)
+    assert out["irmaa_surcharge"] == 0.0
+    assert out["tier"] == 0
+    out = medicare_premium(magi=120_000, age=66)
+    assert out["tier"] == 1
+    assert out["irmaa_surcharge"] > 0
+    out = medicare_premium(magi=600_000, age=66)
+    assert out["tier"] == 5

@@ -90,13 +90,13 @@ def cashflow_bars(results: List[YearResult]) -> go.Figure:
     ages = _ages(results)
     spending = [r.target_net for r in results]
     fed_tax = [r.plan.federal_tax for r in results]
-    aca = [r.plan.aca_oop for r in results]
+    aca = [r.plan.healthcare_oop for r in results]
     penalty = [r.plan.penalty for r in results]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=ages, y=spending, name="Net spending", marker_color=PALETTE["spend"], hovertemplate="%{y:$,.0f}"))
     fig.add_trace(go.Bar(x=ages, y=fed_tax, name="Federal tax", marker_color=PALETTE["tax_ord"], hovertemplate="%{y:$,.0f}"))
-    fig.add_trace(go.Bar(x=ages, y=aca, name="ACA premium OOP", marker_color=PALETTE["aca"], hovertemplate="%{y:$,.0f}"))
+    fig.add_trace(go.Bar(x=ages, y=aca, name="Healthcare OOP", marker_color=PALETTE["aca"], hovertemplate="%{y:$,.0f}"))
     fig.add_trace(go.Bar(x=ages, y=penalty, name="Early-withdrawal penalty", marker_color=PALETTE["penalty"], hovertemplate="%{y:$,.0f}"))
     fig.update_layout(
         **_layout(
@@ -130,12 +130,12 @@ def tax_breakdown(results: List[YearResult]) -> go.Figure:
     """Stacked bars: federal ordinary, federal LTCG (combined into federal here), ACA OOP, penalty."""
     ages = _ages(results)
     fed_tax = [r.plan.federal_tax for r in results]
-    aca = [r.plan.aca_oop for r in results]
+    aca = [r.plan.healthcare_oop for r in results]
     penalty = [r.plan.penalty for r in results]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=ages, y=fed_tax, name="Federal income tax", marker_color=PALETTE["tax_ord"]))
-    fig.add_trace(go.Bar(x=ages, y=aca, name="ACA premium OOP", marker_color=PALETTE["aca"]))
+    fig.add_trace(go.Bar(x=ages, y=aca, name="Healthcare OOP", marker_color=PALETTE["aca"]))
     fig.add_trace(go.Bar(x=ages, y=penalty, name="Early-withdrawal penalty", marker_color=PALETTE["penalty"]))
     fig.update_layout(
         **_layout(
@@ -252,11 +252,11 @@ def compare_cumulative_costs(scenarios: Dict[str, List[YearResult]]) -> go.Figur
     """Grouped bar: lifetime federal tax + ACA + penalty per strategy."""
     names = list(scenarios.keys())
     fed = [sum(r.plan.federal_tax for r in scenarios[n]) for n in names]
-    aca = [sum(r.plan.aca_oop for r in scenarios[n]) for n in names]
+    aca = [sum(r.plan.healthcare_oop for r in scenarios[n]) for n in names]
     pen = [sum(r.plan.penalty for r in scenarios[n]) for n in names]
     fig = go.Figure()
     fig.add_trace(go.Bar(x=names, y=fed, name="Federal tax", marker_color=PALETTE["tax_ord"]))
-    fig.add_trace(go.Bar(x=names, y=aca, name="ACA premium OOP", marker_color=PALETTE["aca"]))
+    fig.add_trace(go.Bar(x=names, y=aca, name="Healthcare OOP", marker_color=PALETTE["aca"]))
     fig.add_trace(go.Bar(x=names, y=pen, name="Early-withdrawal penalty", marker_color=PALETTE["penalty"]))
     fig.update_layout(
         **_layout(
@@ -307,7 +307,7 @@ def per_year_table(results: List[YearResult]) -> pd.DataFrame:
             "LTCG": round(p.ltcg),
             "MAGI": round(p.magi),
             "Fed tax": round(p.federal_tax),
-            "ACA OOP": round(p.aca_oop),
+            "Healthcare OOP": round(p.healthcare_oop),
             "Penalty": round(p.penalty),
             "Withdraw %": round(r.withdrawal_rate * 100, 2),
             "Shortfall": round(p.shortfall),
