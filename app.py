@@ -349,7 +349,7 @@ def comparison_view(base: SimulationInputs) -> None:
     chosen = st.multiselect(
         "Pick 2–4",
         STRATEGY_PRESETS,
-        default=["bridge_optimal", "minimal_convert", "aggressive_convert"],
+        default=["bridge_optimal", "bridge_guarded", "minimal_convert", "aggressive_convert"],
     )
     if "custom" in chosen:
         st.number_input("Custom annual conversion", step=1_000, key="custom_conversion")
@@ -600,19 +600,35 @@ about ACA subsidies.
 
 **Trap:** when basis ratio gets thin in late **Phase A** (the bridge years before 59.5 when Traditional accounts are still penalty-locked), the LTCG ceiling collapses and only
 the std-deduction floor survives — too small to feed enough $80k-sized rungs, leaving a
-ladder gap from years 16–24 that forces some pre-60 penalty Trad pulls.
+ladder gap from years 16–24 that forces some pre-60 penalty Trad pulls. Worse, in
+deep historical drawdowns (1929, 1937 cohorts) the bracket-sized conversion drains the
+*Traditional* balance itself before age 60 — so when the Roth ladder runs out at the
+ladder-gap ages, there's nothing left to draw on at all.
+
+#### `bridge_guarded` — like bridge_optimal, but cap by Trad reserve
+Same bracket-driven target as bridge_optimal, but additionally capped at
+`traditional_balance / years_to_60` in the pre-60 phase. The cap throttles automatically:
+in good sequences Trad grows faster than the cap shrinks, so the bracket target binds
+and behavior matches bridge_optimal. In bad sequences (Trad shrinking faster than time
+remaining), the cap binds and conversion sizes drop, preserving the post-ladder backstop.
+Post-60 the cap relaxes (no penalty risk). Best choice when robustness across
+sequence-of-returns scenarios matters more than maximum Roth stacking.
 
 #### `minimal_convert` — fill the standard deduction only
 Convert exactly `standard_deduction` (~$15.7k) every year. This is **always free**: the
 deduction wipes out the ordinary tax on it, and it's small enough not to push LTCG into
 the 15% bracket. Lowest tax + ACA over the bridge years, but creates a starved ladder —
 $80k spend can't be funded from $15.7k rungs, so you eat penalty Trad pulls in the gap.
+Surprisingly robust on bad sequences because the under-conversion *preserves* Trad as a
+late-bridge fallback — the same insurance bridge_guarded gets explicitly.
 
 #### `aggressive_convert` — fill the top of the 12% bracket
 Convert `standard_deduction + 48,475` (~$64.2k) every year. Ordinary tax rate stays at
 12%, but every dollar above the 0% LTCG ceiling pushes that much LTCG up into the 15%
 bracket. **Most tax-expensive in early years**, but the ladder is fully fed (each $64k
-rung covers a full year of $80k spend with margin), so **zero pre-60 penalty**.
+rung covers a full year of $80k spend with margin), so **zero pre-60 penalty** in the
+deterministic case. Same Trad-drain failure mode as bridge_optimal under deep historical
+drawdowns.
 
 #### `custom` — your number
 Set a fixed annual conversion amount. Useful for sensitivity testing or matching an
@@ -622,15 +638,21 @@ external plan.
 
 ### Reading the comparison view
 
-The interesting comparison is **(federal tax + ACA premium + penalty)** vs **ending balance**:
+The interesting comparison is **(federal tax + ACA premium + penalty)** vs **ending balance**
+vs **success rate under stochastic / historical returns**:
 
-- `minimal_convert` minimizes the visible cost (tax + ACA) but pays it back as penalty.
-- `aggressive_convert` eliminates penalty entirely at the cost of higher early-year tax.
-- `bridge_optimal` aims for the sweet spot but on this portfolio it's not always dominant
-  — the std-ded floor in late Phase A creates a partial ladder gap.
+- `minimal_convert` minimizes the visible cost (tax + ACA) but pays it back as penalty in
+  the ladder gap. Quietly robust because under-conversion preserves the Trad backstop.
+- `aggressive_convert` eliminates penalty entirely under deterministic returns at the cost
+  of higher early-year tax — but its blind bracket-filling drains Trad in bad sequences.
+- `bridge_optimal` aims for the deterministic sweet spot; same Trad-drain risk as aggressive.
+- `bridge_guarded` accepts a small reduction in deterministic upside in exchange for an
+  explicit reserve cap that prevents the Trad-drain failure mode. Often the dominant choice
+  on robustness-weighted portfolios.
 
-There is no single "right" answer; the right choice depends on whether you weight near-term
-cash flow (favor minimal/bridge) or terminal certainty and spending floor (favor aggressive).
+There is no single "right" answer. Pick `aggressive` for terminal wealth in good times,
+`bridge_guarded` or `minimal` for survival in bad sequences, `bridge_optimal` if you
+believe you'll experience close to long-run-mean returns.
 
 ---
 
