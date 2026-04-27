@@ -313,3 +313,52 @@ def per_year_table(results: List[YearResult]) -> pd.DataFrame:
             "Shortfall": round(p.shortfall),
         })
     return pd.DataFrame(rows)
+
+
+# --- Monte Carlo charts -----------------------------------------------------
+
+
+def mc_fan_chart(mc) -> go.Figure:
+    """Fan chart: P5/P25/P50/P75/P95 portfolio trajectories from Monte Carlo."""
+    fig = go.Figure()
+    # Outer band P5–P95
+    fig.add_trace(go.Scatter(x=mc.age, y=mc.p5_balance, mode="lines",
+                             line=dict(color="#3B82F6", width=0),
+                             hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=mc.age, y=mc.p95_balance, mode="lines",
+                             line=dict(color="#3B82F6", width=0),
+                             fill="tonexty", fillcolor="rgba(59,130,246,0.10)",
+                             name="5th–95th percentile", hoverinfo="skip"))
+    # Inner band P25–P75
+    fig.add_trace(go.Scatter(x=mc.age, y=mc.p25_balance, mode="lines",
+                             line=dict(color="#3B82F6", width=0),
+                             hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=mc.age, y=mc.p75_balance, mode="lines",
+                             line=dict(color="#3B82F6", width=0),
+                             fill="tonexty", fillcolor="rgba(59,130,246,0.25)",
+                             name="25th–75th percentile", hoverinfo="skip"))
+    # Median line
+    fig.add_trace(go.Scatter(x=mc.age, y=mc.p50_balance, mode="lines",
+                             line=dict(color="#1F2937", width=2), name="Median",
+                             hovertemplate="%{y:$,.0f}"))
+    fig.update_layout(
+        **_layout(
+            f"Portfolio fan chart — Monte Carlo ({mc.n_runs} paths, real $)",
+            xaxis=dict(title="Age"),
+            yaxis=dict(title="Portfolio balance", tickformat="$,.0f"),
+        )
+    )
+    return fig
+
+
+def mc_success_kpis(mc) -> Dict[str, str]:
+    """Format MC summary for KPI display."""
+    out = {
+        "Success rate": f"{mc.success_rate * 100:.1f}%",
+        "Median ending (real $)": f"${mc.median_ending:,.0f}",
+        "5th-pctile ending": f"${mc.p5_ending:,.0f}",
+        "95th-pctile ending": f"${mc.p95_ending:,.0f}",
+    }
+    if mc.median_depletion_age is not None:
+        out["Median depletion age"] = f"{mc.median_depletion_age:.0f}"
+    return out

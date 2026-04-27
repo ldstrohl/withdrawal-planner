@@ -8,6 +8,8 @@ from __future__ import annotations
 import streamlit as st
 
 import charts
+from planner.montecarlo import run_monte_carlo
+from planner.returns import LognormalReturns
 from planner.simulate import SimulationInputs, simulate, summarize
 from planner.strategy import STRATEGY_DESCRIPTIONS, STRATEGY_PRESETS
 
@@ -26,6 +28,29 @@ STRATEGY_DISPLAY = {
 @st.cache_data
 def cached_simulate(inputs: SimulationInputs):
     return simulate(inputs)
+
+
+@st.cache_data(show_spinner="Running Monte Carlo...")
+def cached_mc(
+    inputs: SimulationInputs,
+    n_runs: int,
+    seed: int,
+    sigma_s: float,
+    sigma_b: float,
+    sigma_c: float,
+    rho: float,
+):
+    model = LognormalReturns(
+        mu_stocks=inputs.stock_return,
+        sigma_stocks=sigma_s,
+        mu_bonds=inputs.bond_return,
+        sigma_bonds=sigma_b,
+        mu_cash=inputs.cash_return,
+        sigma_cash=sigma_c,
+        seed=seed,
+        stock_bond_correlation=rho,
+    )
+    return run_monte_carlo(inputs, returns_model=model, n_runs=n_runs)
 
 
 # Streamlit ≥1.32 supports @st.fragment; older falls back to identity decorator.
@@ -348,6 +373,63 @@ When you take capital gains and do a Roth conversion in the same year, the conve
     )
 
 
+@_fragment
+def monte_carlo_view(base: SimulationInputs) -> None:
+    st.markdown("#### Monte Carlo simulation")
+    st.caption(
+        "Stochastic returns (lognormal). Means use the per-asset returns from the sidebar; "
+        "volatility (σ) is configurable here. Future: plug in historical-data playback "
+        "(Shiller resampling) or richer regime models via the `ReturnsModel` protocol."
+    )
+
+    cols = st.columns(4)
+    with cols[0]:
+        n_runs = st.number_input("Paths", value=1000, min_value=100, max_value=5000, step=100,
+                                 help="More paths = tighter percentile estimates, longer wait.")
+    with cols[1]:
+        seed = st.number_input("Random seed", value=42, step=1,
+                               help="Change to resample. Same seed reproduces same paths.")
+    with cols[2]:
+        sigma_s = st.slider("Stock σ", 0.0, 0.30, 0.18, 0.01,
+                            help="Stdev of log-returns. ~0.18 ≈ historical US large-cap real volatility.")
+    with cols[3]:
+        sigma_b = st.slider("Bond σ", 0.0, 0.15, 0.07, 0.005,
+                            help="Stdev of log-returns. ~0.07 ≈ historical intermediate-bond real volatility.")
+
+    cols2 = st.columns(2)
+    with cols2[0]:
+        sigma_c = st.slider("Cash σ", 0.0, 0.05, 0.01, 0.005,
+                            help="Real cash volatility (mostly inflation surprise).")
+    with cols2[1]:
+        rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05,
+                        help="Annual real-return correlation. Historical US: -0.05 to +0.20.")
+
+    mc = cached_mc(
+        inputs=base,
+        n_runs=int(n_runs),
+        seed=int(seed),
+        sigma_s=float(sigma_s),
+        sigma_b=float(sigma_b),
+        sigma_c=float(sigma_c),
+        rho=float(rho),
+    )
+
+    kpis = charts.mc_success_kpis(mc)
+    kpi_cols = st.columns(len(kpis))
+    for col, (label, value) in zip(kpi_cols, kpis.items()):
+        col.metric(label, value)
+
+    if mc.success_rate < 0.80:
+        st.warning(
+            f"Success rate {mc.success_rate:.0%} is below 80% — sequence-of-returns risk is "
+            f"meaningful for this plan. Consider lowering target spend or extending the bridge."
+        )
+    elif mc.success_rate >= 0.95:
+        st.success(f"Success rate {mc.success_rate:.0%} — plan is robust to historical-style volatility.")
+
+    st.plotly_chart(charts.mc_fan_chart(mc), use_container_width=True)
+
+
 # --- main ----------------------------------------------------------------
 
 st.title("Early Retirement Withdrawal Planner")
@@ -358,14 +440,16 @@ if "custom_conversion" not in st.session_state:
 
 base = render_sidebar()
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Single scenario", "Compare strategies", "How it works", "Inputs & assumptions"]
+tab1, tab2, tab_mc, tab3, tab4 = st.tabs(
+    ["Single scenario", "Compare strategies", "Monte Carlo", "How it works", "Inputs & assumptions"]
 )
 
 with tab1:
     single_scenario_view(base)
 with tab2:
     comparison_view(base)
+with tab_mc:
+    monte_carlo_view(base)
 with tab3:
     how_it_works_view()
 with tab4:

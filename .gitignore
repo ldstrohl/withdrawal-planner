@@ -5,3 +5,4 @@ __pycache__/
 /tmp/
 *.egg-info/
 .DS_Store
+.claude/

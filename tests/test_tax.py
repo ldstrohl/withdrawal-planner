@@ -121,3 +121,27 @@ def test_rmd_at_age_73():
 def test_rmd_grows_with_age():
     from planner.tax import required_min_distribution
     assert required_min_distribution(500_000, age=85) > required_min_distribution(500_000, age=73)
+
+
+def test_monte_carlo_smoke():
+    from planner.simulate import SimulationInputs
+    from planner.returns import LognormalReturns
+    from planner.montecarlo import run_monte_carlo
+    inputs = SimulationInputs(horizon_years=20)
+    model = LognormalReturns(seed=42)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=50)
+    assert mc.n_runs == 50
+    assert 0.0 <= mc.success_rate <= 1.0
+    assert len(mc.p50_balance) == 20
+    assert mc.median_ending > 0
+
+
+def test_lognormal_returns_reproducible():
+    from planner.returns import LognormalReturns
+    m = LognormalReturns(seed=7)
+    a = m.get(year_index=3, path_index=10)
+    b = m.get(year_index=3, path_index=10)
+    assert a == b
+    # Different paths produce different draws
+    c = m.get(year_index=3, path_index=11)
+    assert a != c
