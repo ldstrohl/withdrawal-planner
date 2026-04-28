@@ -1,8 +1,9 @@
 # Early Retirement Withdrawal Planner
 
-Tax- and penalty-optimized withdrawal simulator for early retirees. Tuned for a single
-filer in Washington State on ACA marketplace healthcare. Real-dollar, year-by-year
-simulation with deterministic, Monte Carlo (lognormal), and historical (Shiller) modes.
+Tax- and penalty-optimized withdrawal simulator for early retirees. Single filer on
+ACA marketplace healthcare; pluggable state-tax model (9 no-tax states + WA + CUSTOM).
+Real-dollar, year-by-year simulation with deterministic, Monte Carlo (lognormal), and
+historical (Shiller) returns modes.
 
 ## Quickstart
 
@@ -18,7 +19,8 @@ loader will prefer it. Otherwise, use the in-app sidebar to import/export JSON.
 
 ## Layout
 
-- `planner/tax.py` — federal brackets, LTCG stacking, ACA subsidy, Medicare + IRMAA, RMDs, taxable-SS rule, WA cap-gains
+- `planner/tax.py` — federal brackets, LTCG stacking, ACA subsidy, Medicare + IRMAA, RMDs, taxable-SS rule
+- `planner/state_tax.py` — pluggable state-tax presets and flat-rate engine
 - `planner/accounts.py` — account types and Roth ladder bookkeeping
 - `planner/strategy.py` — preset withdrawal/conversion strategies, source priority, year planner with iterative tax fixed-point
 - `planner/streams.py` — generic scheduled income / expense streams (rentals, pensions, tuition, LTC, etc.)
@@ -46,14 +48,34 @@ loader will prefer it. Otherwise, use the in-app sidebar to import/export JSON.
 - **Lognormal** — synthetic, configurable σ + correlation; runs N stochastic paths
 - **Historical (rolling start)** — replays each calendar start year 1928 onward through the horizon; n_paths bounded by data coverage and horizon length. Path-inspector lets you pick worst-failing/median/best/by-index and see the underlying account-balance trajectory.
 
+## Spending input
+
+Spend can be entered two ways:
+- **Fixed annual amount** — real-dollar number, constant in real terms across all years.
+- **% of starting portfolio (SWR)** — engine resolves to dollars at sim start as
+  `starting_total × spend_rate` and uses that constant amount throughout. Pick this when
+  you want to think in 4%-rule / 3.5% / lean-FIRE terms.
+
+## State tax
+
+Pluggable. Pre-configured presets:
+- 9 no-income-tax states: TX, FL, NV, AK, NH, SD, TN, WY, plus NONE
+- WA — the existing 7% LTCG above $262k rule
+- CUSTOM — flat marginal-rate approximation; you enter ordinary rate, LTCG rate, and
+  optional LTCG threshold
+
+The CUSTOM model intentionally ignores per-state brackets, SS exemptions, pension
+exclusions, and itemized deductions. Use it as a conservative bound for cross-state
+planning, not for filing prep.
+
 ## Key assumptions
 
-- Single filer; brackets are 2026 estimates (2025 actuals projected forward)
+- Single filer; federal brackets are 2026 estimates (2025 actuals projected forward)
 - All values are real (inflation-adjusted) dollars
 - Growth applied at start of year, then withdrawal/conversion/RMD
 - 10% early-withdrawal penalty on Traditional pre-age-60 (proxy for 59.5)
 - HSA non-medical withdrawals modeled as ordinary income only (20% pre-65 penalty omitted)
-- WA capital gains tax (7% above $262k LTCG) **is** modeled (`state_tax` field)
+- State tax: pluggable per scenario (see "State tax" section above)
 - Social Security taxed using IRS provisional-income test (0/50/85% inclusion)
 - Medicare IRMAA uses current-year MAGI (IRS actually uses MAGI from 2 years prior)
 - ACA: IRA-extended sliding-scale schedule (`cap`) or pre-IRA cliff (`cliff`) on $8k benchmark unsubsidized premium

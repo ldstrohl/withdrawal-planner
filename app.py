@@ -445,8 +445,24 @@ def kpi_row(results, summary: dict) -> None:
         st.error(f"Plan does not fully fund target: lifetime shortfall ${summary['total_shortfall']:,.0f}")
 
 
+def _scenario_heading(base: SimulationInputs) -> None:
+    """One-line context header: starting NW + resolved SWR. Reused by single + Strategies tabs."""
+    starting_nw = (base.initial_cash + base.initial_taxable + base.initial_traditional
+                   + base.initial_roth + base.initial_hsa)
+    if base.spend_mode == "swr":
+        eff_spend = starting_nw * base.spend_rate
+    else:
+        eff_spend = base.target_spend
+    swr = (eff_spend / starting_nw) if starting_nw > 0 else 0.0
+    st.markdown(
+        f"### Scenario: Starting Net Worth ${starting_nw:,.0f}  ·  "
+        f"SWR {swr:.2%}  ·  Spend ${eff_spend:,.0f}/yr"
+    )
+
+
 @_fragment
 def single_scenario_view(base: SimulationInputs) -> None:
+    _scenario_heading(base)
     st.markdown("#### Strategy")
     cols = st.columns([2, 3])
     with cols[0]:
@@ -490,18 +506,7 @@ def single_scenario_view(base: SimulationInputs) -> None:
 
 @_fragment
 def strategies_view(base: SimulationInputs) -> None:
-    # Heading: starting NW and implied SWR
-    starting_nw = (base.initial_cash + base.initial_taxable + base.initial_traditional
-                   + base.initial_roth + base.initial_hsa)
-    spend_mode = getattr(base, "spend_mode", "fixed")
-    spend_rate = getattr(base, "spend_rate", 0.035)
-    effective_spend = (starting_nw * spend_rate
-                       if spend_mode == "swr"
-                       else base.target_spend)
-    swr = effective_spend / starting_nw if starting_nw > 0 else 0.0
-    st.markdown(
-        f"### Scenario: Starting Net Worth ${starting_nw:,.0f} · SWR {swr:.2%}"
-    )
+    _scenario_heading(base)
 
     # Strategy multiselect
     chosen = st.multiselect(
@@ -703,6 +708,16 @@ def strategies_view(base: SimulationInputs) -> None:
 
 def inputs_summary_view(base: SimulationInputs) -> None:
     st.markdown("##### Echoed parameters")
+    starting_nw = (base.initial_cash + base.initial_taxable + base.initial_traditional
+                   + base.initial_roth + base.initial_hsa)
+    if base.spend_mode == "swr":
+        spend_label = f"{base.spend_rate:.2%} of starting (≈ ${starting_nw * base.spend_rate:,.0f})"
+    else:
+        spend_label = f"${base.target_spend:,.0f} (fixed)"
+    state_label = STATE_PRESETS.get(base.state_code, STATE_PRESETS["NONE"]).name
+    if base.state_code == "CUSTOM":
+        state_label = (f"Custom — ord {base.state_ordinary_rate:.2%}, "
+                       f"LTCG {base.state_ltcg_rate:.2%} above ${base.state_ltcg_threshold:,.0f}")
     items = [
         ("Cash", f"${base.initial_cash:,.0f}"),
         ("Taxable", f"${base.initial_taxable:,.0f}"),
@@ -711,17 +726,17 @@ def inputs_summary_view(base: SimulationInputs) -> None:
         ("Roth", f"${base.initial_roth:,.0f}"),
         ("Roth contributions", f"${base.roth_contributions:,.0f}"),
         ("HSA", f"${base.initial_hsa:,.0f}"),
-        ("Total starting", f"${base.initial_cash + base.initial_taxable + base.initial_traditional + base.initial_roth + base.initial_hsa:,.0f}"),
-        ("Target net spend", f"${base.target_spend:,.0f}"),
+        ("Total starting", f"${starting_nw:,.0f}"),
+        ("Spending", spend_label),
         ("Stock return", f"{base.stock_return:.2%}"),
         ("Bond return", f"{base.bond_return:.2%}"),
         ("Cash return", f"{base.cash_return:.2%}"),
         ("Stock allocation", f"{base.stock_allocation:.0%}"),
         ("Start age", base.start_age),
         ("Horizon", f"{base.horizon_years} years"),
-        # F. SS fields added after Horizon
         ("SS benefit", f"${base.ss_annual_benefit:,.0f}"),
         ("SS claim age", base.ss_claim_age),
+        ("State", state_label),
         ("ACA mode", base.aca_mode),
         ("Tax params", base.params.label),
     ]
@@ -751,7 +766,7 @@ def inputs_summary_view(base: SimulationInputs) -> None:
         "- Growth is applied at the **start** of each year, then withdrawal/conversion happens.\n"
         "- 10% early-withdrawal penalty applies to Traditional withdrawals before age 60 (proxy for 59.5).\n"
         "- HSA non-medical withdrawals are modeled as taxable income; the additional 20% pre-65 penalty is **not** modeled (HSA is last-resort here, so impact is small in well-formed plans).\n"
-        "- WA state has no income tax. The 7% capital-gains tax above $262k LTCG **is** modeled (state_tax field on PlanResult; lifetime sum in summary).\n"
+        "- State tax: pluggable. 9 no-tax states + WA's 7% LTCG above $262k pre-configured; CUSTOM lets you enter flat marginal rates. Per-state quirks (SS exemptions, pension exclusions, brackets) are NOT modeled — see How-it-works for details.\n"
         "- ACA premium model uses the IRA-expanded sliding-scale schedule (or 400% FPL cliff) on a benchmark $8k/yr unsubsidized premium.\n"
         "- Social Security is taxed using the IRS provisional-income test (0/50/85% inclusion) — not the simplified 100% inclusion.\n"
         "- Medicare IRMAA surcharge uses **current-year** MAGI (IRS actually uses MAGI from 2 years prior — simplification understates volatility-year IRMAA by ~2 years)."
@@ -918,6 +933,41 @@ starting at age 65. Above income thresholds, the Income-Related Monthly Adjustme
 (IRMAA) adds a surcharge in discrete tiers based on MAGI — the simulator uses current-year
 MAGI as a simplification; IRS actually uses MAGI from two years prior, so volatility-year
 IRMAA exposure may be understated by approximately two years.
+
+---
+
+### State income & capital-gains tax
+
+State tax is modeled with a flat-rate approximation: one rate on ordinary income, one
+rate on long-term capital gains (with optional threshold). Pre-configured presets cover
+the 9 no-income-tax states (TX, FL, NV, AK, NH, SD, TN, WY, NONE) plus Washington's
+specific 7% LTCG rule above $262k. For any other state, choose **CUSTOM** and enter
+your top marginal rates.
+
+This is a deliberately rough model. It **does not** capture per-state bracket structures,
+SS taxation rules (most states exempt SS, some don't), pension or retirement-income
+exclusions (PA exempts most, IL exempts pensions, etc.), or itemized deductions. For a
+high-tax state like CA or NY, entering the top marginal rate as the flat rate is a
+*conservative* approximation — your actual state tax will usually be lower because
+withdrawal-era ordinary income often falls below top brackets and SS/pension exclusions
+apply. For state-specific filing prep, consult a tax pro.
+
+---
+
+### Spending: fixed dollars or SWR percent
+
+Spending can be entered two ways:
+
+- **Fixed annual amount:** a real-dollar number that stays constant in real terms across
+  all years.
+- **% of starting portfolio (SWR):** a Safe Withdrawal Rate as a fraction. The engine
+  resolves it to dollars at simulation start as `starting_total × spend_rate` and uses
+  that constant amount for every year. 0.04 corresponds to the 4% rule; 0.035 is more
+  conservative; 0.030 lean-FIRE territory.
+
+Both modes produce an identical year-1 dollar amount when the rate matches; the
+difference is intent. SWR mode is useful for sensitivity testing across portfolio sizes
+without manually recomputing the dollar figure each time.
 """
     )
 
