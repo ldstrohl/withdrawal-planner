@@ -489,79 +489,119 @@ def single_scenario_view(base: SimulationInputs) -> None:
 
 
 @_fragment
-def comparison_view(base: SimulationInputs) -> None:
-    st.markdown("#### Strategies to compare")
+def strategies_view(base: SimulationInputs) -> None:
+    # Heading: starting NW and implied SWR
+    starting_nw = (base.initial_cash + base.initial_taxable + base.initial_traditional
+                   + base.initial_roth + base.initial_hsa)
+    spend_mode = getattr(base, "spend_mode", "fixed")
+    spend_rate = getattr(base, "spend_rate", 0.035)
+    effective_spend = (starting_nw * spend_rate
+                       if spend_mode == "swr"
+                       else base.target_spend)
+    swr = effective_spend / starting_nw if starting_nw > 0 else 0.0
+    st.markdown(
+        f"### Scenario: Starting Net Worth ${starting_nw:,.0f} · SWR {swr:.2%}"
+    )
+
+    # Strategy multiselect
     chosen = st.multiselect(
-        "Pick 2–4",
-        STRATEGY_PRESETS,
+        "Strategies",
+        list(STRATEGY_PRESETS),
         default=["bridge_optimal", "bridge_guarded", "minimal_convert", "aggressive_convert"],
     )
     if "custom" in chosen:
         st.number_input("Custom annual conversion", step=1_000, key="custom_conversion")
     custom_amount = st.session_state["custom_conversion"]
 
-    if len(chosen) < 2:
-        st.info("Select at least 2 strategies.")
+    if len(chosen) < 1:
+        st.info("Select at least 1 strategy.")
         return
 
-    # C. Optional per-strategy MC checkbox + model choice
-    mc_cols = st.columns([2, 3])
-    with mc_cols[0]:
-        mc_compare = st.checkbox("Run Monte Carlo per strategy (slower)", value=False)
-    with mc_cols[1]:
-        mc_compare_model = st.radio(
-            "MC returns model",
-            options=["lognormal", "historical"],
-            format_func=lambda m: {"lognormal": "Lognormal (200 paths)", "historical": "Historical (rolling start)"}[m],
-            horizontal=True,
-            disabled=not mc_compare,
-            key="mc_compare_model",
+    # Returns model radio
+    model_choice = st.radio(
+        "Returns model",
+        options=["deterministic", "lognormal", "historical"],
+        format_func=lambda m: {
+            "deterministic": "Deterministic (constant returns from sidebar)",
+            "lognormal": "Lognormal MC (synthetic σ)",
+            "historical": "Historical (Shiller annual real returns)",
+        }[m],
+        horizontal=True,
+        key="strat_model_choice",
+    )
+
+    # Conditional model inputs
+    n_runs = 1000
+    seed = 42
+    sigma_s, sigma_b, sigma_c, rho = 0.18, 0.07, 0.01, 0.05
+    mc_results: dict = {}
+
+    if model_choice == "lognormal":
+        cols = st.columns(2)
+        with cols[0]:
+            n_runs = int(st.number_input("Paths", value=1000, min_value=100, max_value=5000, step=100))
+        with cols[1]:
+            seed = int(st.number_input("Random seed", value=42, step=1))
+        with st.expander("Advanced: volatility parameters", expanded=False):
+            adv_cols = st.columns(2)
+            with adv_cols[0]:
+                sigma_s = st.slider("Stock σ", 0.0, 0.30, 0.18, 0.01)
+            with adv_cols[1]:
+                sigma_b = st.slider("Bond σ", 0.0, 0.15, 0.07, 0.005)
+            adv_cols2 = st.columns(2)
+            with adv_cols2[0]:
+                sigma_c = st.slider("Cash σ", 0.0, 0.05, 0.01, 0.005)
+            with adv_cols2[1]:
+                rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05)
+
+    elif model_choice == "historical":
+        preview = HistoricalPlayback(horizon_years=base.horizon_years)
+        if preview.n_paths == 0:
+            st.error(
+                f"Horizon of {base.horizon_years} years exceeds the historical dataset "
+                f"({preview.coverage[0]}–{preview.coverage[1]}). Switch to Lognormal or reduce horizon."
+            )
+            return
+        st.caption(
+            f"Replays {preview.n_paths} sequences with start years "
+            f"{preview.start_years[0]}–{preview.start_years[-1]} "
+            f"(data: {preview.coverage[0]}–{preview.coverage[1]}, real returns from Shiller's S&P + 10y bond series; cash held at 0% real)."
         )
 
+    # Compute deterministic scenarios for all chosen strategies
     scenarios = {}
     for name in chosen:
-        inputs = SimulationInputs(**{
+        inp = SimulationInputs(**{
             **base.__dict__,
             "strategy": name,
             "custom_conversion": custom_amount if name == "custom" else None,
         })
-        scenarios[name] = cached_simulate(inputs)
+        scenarios[name] = cached_simulate(inp)
 
-    success_rates: dict[str, float] = {}
-    mc_label = ""
-    if mc_compare:
-        if mc_compare_model == "lognormal":
-            for name in chosen:
-                mc_inputs = SimulationInputs(**{
-                    **base.__dict__,
-                    "strategy": name,
-                    "custom_conversion": custom_amount if name == "custom" else None,
-                })
-                mc_result = cached_mc_lognormal(
-                    inputs=mc_inputs, n_runs=200, seed=42,
-                    sigma_s=0.18, sigma_b=0.07, sigma_c=0.01, rho=0.05,
-                )
-                success_rates[name] = mc_result.success_rate
-            mc_label = "Lognormal · 200 paths"
-        else:
-            preview = HistoricalPlayback(horizon_years=base.horizon_years)
-            if preview.n_paths == 0:
-                st.error(
-                    f"Horizon of {base.horizon_years} years exceeds the historical dataset "
-                    f"({preview.coverage[0]}–{preview.coverage[1]}). Switch to Lognormal or reduce horizon."
-                )
-            else:
-                for name in chosen:
-                    mc_inputs = SimulationInputs(**{
-                        **base.__dict__,
-                        "strategy": name,
-                        "custom_conversion": custom_amount if name == "custom" else None,
-                    })
-                    mc_result = cached_mc_historical(inputs=mc_inputs, start_year_floor=1928)
-                    success_rates[name] = mc_result.success_rate
-                mc_label = f"Historical · {preview.n_paths} sequences ({preview.start_years[0]}–{preview.start_years[-1]})"
+    # Compute MC results when requested
+    if model_choice == "lognormal":
+        for name in chosen:
+            inp = SimulationInputs(**{
+                **base.__dict__,
+                "strategy": name,
+                "custom_conversion": custom_amount if name == "custom" else None,
+            })
+            mc_results[name] = cached_mc_lognormal(
+                inputs=inp, n_runs=n_runs, seed=seed,
+                sigma_s=sigma_s, sigma_b=sigma_b, sigma_c=sigma_c, rho=rho,
+            )
+    elif model_choice == "historical":
+        for name in chosen:
+            inp = SimulationInputs(**{
+                **base.__dict__,
+                "strategy": name,
+                "custom_conversion": custom_amount if name == "custom" else None,
+            })
+            mc_results[name] = cached_mc_historical(inputs=inp, start_year_floor=1928)
 
-    # Summary table
+    mc_enabled = model_choice in ("lognormal", "historical")
+
+    # Lifetime summary table
     rows = []
     for name, results in scenarios.items():
         s = summarize(results)
@@ -570,89 +610,92 @@ def comparison_view(base: SimulationInputs) -> None:
             "Ending (real $)": f"${s['ending_total']:,.0f}",
             "Years funded": s["years_funded"],
             "Fed tax": f"${s['total_federal_tax']:,.0f}",
+            "State tax": f"${s.get('total_state_tax', 0):,.0f}",
             "Healthcare OOP": f"${s['total_healthcare_oop']:,.0f}",
             "Penalty": f"${s['total_penalty']:,.0f}",
             "Conversions total": f"${s['total_conversions']:,.0f}",
             "Shortfall": f"${s['total_shortfall']:,.0f}",
         }
-        if mc_compare:
-            row["Success rate"] = f"{success_rates.get(name, 0.0):.0%}"
+        if mc_enabled:
+            mc = mc_results.get(name)
+            row["Success rate"] = f"{mc.success_rate:.0%}" if mc else "—"
         rows.append(row)
     st.markdown("##### Lifetime summary")
     st.dataframe(rows, hide_index=True, use_container_width=True)
 
-    # C. Success-rate bar chart when mc_compare is on
-    if mc_compare and success_rates:
-        import plotly.graph_objects as go
-        bar_fig = go.Figure(go.Bar(
-            x=[STRATEGY_DISPLAY.get(n, n) for n in success_rates],
-            y=[v * 100 for v in success_rates.values()],
-            text=[f"{v:.0%}" for v in success_rates.values()],
-            textposition="auto",
-        ))
-        bar_fig.update_layout(
-            title=f"Monte Carlo success rate by strategy ({mc_label})",
-            xaxis_title="Strategy",
-            yaxis_title="Success rate (%)",
-            yaxis=dict(range=[0, 100]),
-        )
-        st.plotly_chart(bar_fig, use_container_width=True)
+    # Comparison charts (suppressed when exactly 1 strategy)
+    if len(chosen) > 1:
+        st.plotly_chart(charts.compare_balance_trajectory(scenarios), use_container_width=True)
+        cols = st.columns(3)
+        with cols[0]:
+            st.plotly_chart(charts.compare_ending_balance(scenarios), use_container_width=True)
+        with cols[1]:
+            st.plotly_chart(charts.compare_cumulative_costs(scenarios), use_container_width=True)
+        with cols[2]:
+            st.plotly_chart(charts.compare_shortfall(scenarios), use_container_width=True)
 
-    st.plotly_chart(charts.compare_balance_trajectory(scenarios), use_container_width=True)
-
-    cols = st.columns(3)
-    with cols[0]:
-        st.plotly_chart(charts.compare_ending_balance(scenarios), use_container_width=True)
-    with cols[1]:
-        st.plotly_chart(charts.compare_cumulative_costs(scenarios), use_container_width=True)
-    with cols[2]:
-        st.plotly_chart(charts.compare_shortfall(scenarios), use_container_width=True)
-
-    # Side-by-side account composition (deterministic)
-    st.markdown("##### Account composition over time, per strategy (deterministic, sidebar returns)")
+    # Per-strategy account composition (always)
+    st.markdown("##### Account composition over time, per strategy")
     for name, results in scenarios.items():
         fig = charts.balance_stack(results)
         fig.update_layout(title=dict(text=f"{STRATEGY_DISPLAY.get(name, name)}: account balances"))
         st.plotly_chart(fig, use_container_width=True)
 
-    # Inspect a single MC path under each strategy (only when mc_compare is on)
-    if mc_compare and success_rates and chosen:
-        st.markdown("##### Inspect a single Monte Carlo path under each strategy")
-        ref_strat = chosen[0]
-        ref_inputs = SimulationInputs(**{
-            **base.__dict__,
-            "strategy": ref_strat,
-            "custom_conversion": custom_amount if ref_strat == "custom" else None,
-        })
-        if mc_compare_model == "lognormal":
-            ref_mc = cached_mc_lognormal(
-                inputs=ref_inputs, n_runs=200, seed=42,
-                sigma_s=0.18, sigma_b=0.07, sigma_c=0.01, rho=0.05,
-            )
-            picker_model = LognormalReturns(
-                mu_stocks=ref_inputs.stock_return, sigma_stocks=0.18,
-                mu_bonds=ref_inputs.bond_return, sigma_bonds=0.07,
-                mu_cash=ref_inputs.cash_return, sigma_cash=0.01,
-                seed=42, stock_bond_correlation=0.05,
-            )
-            year_label_fn = lambda i: ""
-        else:
-            ref_mc = cached_mc_historical(inputs=ref_inputs, start_year_floor=1928)
-            picker_model = HistoricalPlayback(horizon_years=ref_inputs.horizon_years)
-            year_label_fn = lambda i: f" (start year {picker_model.start_years[i]})"
+    # MC-only outputs
+    if mc_enabled and mc_results:
+        # Per-strategy success-rate callouts
+        for name, mc in mc_results.items():
+            display = STRATEGY_DISPLAY.get(name, name)
+            if mc.success_rate < 0.80:
+                st.warning(
+                    f"**{display}**: success rate {mc.success_rate:.0%} is below 80% — "
+                    f"sequence-of-returns risk is meaningful. Consider lowering spend or extending the bridge."
+                )
+            elif mc.success_rate < 0.95:
+                st.info(
+                    f"**{display}**: success rate {mc.success_rate:.0%} — meaningful but not robust to severe sequences."
+                )
+            else:
+                st.success(f"**{display}**: success rate {mc.success_rate:.0%} — robust to historical-style volatility.")
 
-        idx = _pick_mc_path(ref_mc, year_label_fn, key_prefix="cmp_")
+        # Per-strategy fan charts
+        st.markdown("##### Monte Carlo fan charts")
+        for name, mc in mc_results.items():
+            display = STRATEGY_DISPLAY.get(name, name)
+            fig = charts.mc_fan_chart(mc)
+            fig.update_layout(title=dict(text=f"{display}: MC fan chart"))
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Path inspector (uses first chosen strategy as reference)
+        st.markdown("##### Inspect a single Monte Carlo path under each strategy")
+        ref_name = chosen[0]
+        ref_mc = mc_results[ref_name]
+
+        if model_choice == "lognormal":
+            path_model = LognormalReturns(
+                mu_stocks=base.stock_return, sigma_stocks=sigma_s,
+                mu_bonds=base.bond_return, sigma_bonds=sigma_b,
+                mu_cash=base.cash_return, sigma_cash=sigma_c,
+                seed=seed, stock_bond_correlation=rho,
+            )
+            year_label_fn = None
+        else:
+            path_model = HistoricalPlayback(horizon_years=base.horizon_years)
+            year_label_fn = lambda i: f" (start year {path_model.start_years[i]})"
+
+        idx = _pick_mc_path(ref_mc, year_label_fn, key_prefix="strat_")
         for name in chosen:
             inp_strat = SimulationInputs(**{
                 **base.__dict__,
                 "strategy": name,
                 "custom_conversion": custom_amount if name == "custom" else None,
             })
-            single = simulate(inp_strat, returns_model=picker_model, path_index=idx)
+            single = simulate(inp_strat, returns_model=path_model, path_index=idx)
             fig = charts.balance_stack(single)
             short_total = sum(r.plan.shortfall for r in single)
+            display = STRATEGY_DISPLAY.get(name, name)
             fig.update_layout(
-                title=dict(text=f"{STRATEGY_DISPLAY.get(name, name)}: account balances on this path"
+                title=dict(text=f"{display}: account balances on this path"
                                 + (f" — shortfall ${short_total:,.0f}" if short_total > 0 else ""))
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -879,120 +922,6 @@ IRMAA exposure may be understated by approximately two years.
     )
 
 
-@_fragment
-def monte_carlo_view(base: SimulationInputs) -> None:
-    st.markdown("#### Monte Carlo simulation")
-
-    model_choice = st.radio(
-        "Returns model",
-        options=["lognormal", "historical"],
-        format_func=lambda m: {
-            "lognormal": "Lognormal (synthetic, configurable σ)",
-            "historical": "Historical (Shiller annual real returns, rolling start)",
-        }[m],
-        horizontal=True,
-        key="mc_model_choice",
-    )
-
-    strategy = st.selectbox(
-        "Strategy",
-        STRATEGY_PRESETS,
-        format_func=lambda s: STRATEGY_DISPLAY.get(s, s),
-        key="mc_strategy",
-    )
-    inputs = SimulationInputs(**{**base.__dict__, "strategy": strategy})
-
-    if model_choice == "lognormal":
-        cols = st.columns(2)
-        with cols[0]:
-            n_runs = st.number_input("Paths", value=1000, min_value=100, max_value=5000, step=100,
-                                     help="More paths = tighter percentile estimates, longer wait.")
-        with cols[1]:
-            seed = st.number_input("Random seed", value=42, step=1,
-                                   help="Change to resample. Same seed reproduces same paths.")
-
-        with st.expander("Advanced: volatility parameters", expanded=False):
-            adv_cols = st.columns(2)
-            with adv_cols[0]:
-                sigma_s = st.slider("Stock σ", 0.0, 0.30, 0.18, 0.01,
-                                    help="Stdev of log-returns. ~0.18 ≈ historical US large-cap real volatility.")
-            with adv_cols[1]:
-                sigma_b = st.slider("Bond σ", 0.0, 0.15, 0.07, 0.005,
-                                    help="Stdev of log-returns. ~0.07 ≈ historical intermediate-bond real volatility.")
-            adv_cols2 = st.columns(2)
-            with adv_cols2[0]:
-                sigma_c = st.slider("Cash σ", 0.0, 0.05, 0.01, 0.005,
-                                    help="Real cash volatility (mostly inflation surprise).")
-            with adv_cols2[1]:
-                rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05,
-                                help="Annual real-return correlation. Historical US: -0.05 to +0.20.")
-
-        mc = cached_mc_lognormal(
-            inputs=inputs,
-            n_runs=int(n_runs),
-            seed=int(seed),
-            sigma_s=float(sigma_s),
-            sigma_b=float(sigma_b),
-            sigma_c=float(sigma_c),
-            rho=float(rho),
-        )
-        run_label = f"Lognormal · {int(n_runs)} paths"
-        # Reconstruct an equivalent model for ad-hoc single-path replay below
-        # (LognormalReturns is stateless given its params + seed, so this is identical to what cached_mc used).
-        path_model = LognormalReturns(
-            mu_stocks=inputs.stock_return, sigma_stocks=float(sigma_s),
-            mu_bonds=inputs.bond_return, sigma_bonds=float(sigma_b),
-            mu_cash=inputs.cash_return, sigma_cash=float(sigma_c),
-            seed=int(seed), stock_bond_correlation=float(rho),
-        )
-        year_label_fn = None
-    else:
-        # Preview model to surface n_paths / horizon mismatch before running.
-        preview = HistoricalPlayback(horizon_years=inputs.horizon_years)
-        if preview.n_paths == 0:
-            st.error(
-                f"Horizon of {inputs.horizon_years} years exceeds the historical dataset "
-                f"({preview.coverage[0]}–{preview.coverage[1]}). Reduce horizon in the sidebar."
-            )
-            return
-        st.caption(
-            f"Replays {preview.n_paths} sequences with start years "
-            f"{preview.start_years[0]}–{preview.start_years[-1]} "
-            f"(data: {preview.coverage[0]}–{preview.coverage[1]}, real returns from Shiller's S&P + 10y bond series; cash held at 0% real)."
-        )
-        mc = cached_mc_historical(inputs=inputs, start_year_floor=1928)
-        run_label = f"Historical · {preview.n_paths} sequences ({preview.start_years[0]}–{preview.start_years[-1]})"
-        path_model = preview
-        year_label_fn = lambda i: f" (start year {preview.start_years[i]})"
-
-    kpis = charts.mc_success_kpis(mc)
-    kpi_cols = st.columns(len(kpis))
-    for col, (label, value) in zip(kpi_cols, kpis.items()):
-        col.metric(label, value)
-
-    st.caption(f"Strategy: {STRATEGY_DISPLAY.get(strategy, strategy)}  ·  {run_label}")
-
-    if mc.success_rate < 0.80:
-        st.warning(
-            f"Success rate {mc.success_rate:.0%} is below 80% — sequence-of-returns risk is "
-            f"meaningful for this plan. Consider lowering target spend or extending the bridge."
-        )
-    elif mc.success_rate < 0.95:
-        st.info(
-            f"Success rate {mc.success_rate:.0%} — meaningful but not robust to severe sequences. "
-            f"Consider tightening spend or lengthening bridge."
-        )
-    else:
-        st.success(f"Success rate {mc.success_rate:.0%} — plan is robust to historical-style volatility.")
-
-    st.plotly_chart(charts.mc_fan_chart(mc), use_container_width=True)
-
-    st.markdown("##### Inspect a single path")
-    idx = _pick_mc_path(mc, year_label_fn, key_prefix="mc_")
-    single = simulate(inputs, returns_model=path_model, path_index=idx)
-    fig = charts.balance_stack(single)
-    fig.update_layout(title=dict(text=f"Account balances on this path — {STRATEGY_DISPLAY.get(strategy, strategy)}"))
-    st.plotly_chart(fig, use_container_width=True)
 
 
 # --- main ----------------------------------------------------------------
@@ -1005,16 +934,14 @@ if "custom_conversion" not in st.session_state:
 
 base = render_sidebar()
 
-tab1, tab2, tab_mc, tab3, tab4 = st.tabs(
-    ["Single scenario", "Compare strategies", "Monte Carlo", "How it works", "Inputs & assumptions"]
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["Single scenario", "Strategies", "How it works", "Inputs & assumptions"]
 )
 
 with tab1:
     single_scenario_view(base)
 with tab2:
-    comparison_view(base)
-with tab_mc:
-    monte_carlo_view(base)
+    strategies_view(base)
 with tab3:
     how_it_works_view()
 with tab4:
