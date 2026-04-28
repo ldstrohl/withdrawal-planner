@@ -15,6 +15,7 @@ import charts
 from planner.montecarlo import run_monte_carlo
 from planner.returns import HistoricalPlayback, LognormalReturns
 from planner.simulate import SimulationInputs, simulate, summarize
+from planner.state_tax import STATE_PRESETS
 from planner.strategy import STRATEGY_DESCRIPTIONS, STRATEGY_PRESETS
 from planner.streams import ExpenseStream, IncomeStream
 
@@ -55,6 +56,12 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
     "aca_mode": "cap",
     "income_streams": [],
     "expense_streams": [],
+    "state_code": "WA",
+    "state_ordinary_rate": 0.0,
+    "state_ltcg_rate": 0.0,
+    "state_ltcg_threshold": 0.0,
+    "spend_mode": "fixed",
+    "spend_rate": 0.035,
 }
 
 
@@ -222,7 +229,30 @@ def render_sidebar() -> SimulationInputs:
     hsa = st.sidebar.number_input("HSA", step=1_000, key="scn_initial_hsa")
 
     st.sidebar.markdown("### Spending")
-    target = st.sidebar.number_input("Target net annual spend (real $)", step=1_000, key="scn_target_spend")
+    spend_mode = st.sidebar.radio(
+        "Mode",
+        options=["fixed", "swr"],
+        format_func=lambda m: {"fixed": "Fixed annual amount", "swr": "% of starting portfolio (SWR)"}[m],
+        key="scn_spend_mode",
+        horizontal=False,
+        help="Fixed: enter a real-$ annual spend. SWR: enter a % and the engine resolves to dollars × starting portfolio.",
+    )
+    if spend_mode == "fixed":
+        target = st.sidebar.number_input(
+            "Target net annual spend (real $)", step=1_000, key="scn_target_spend",
+        )
+        spend_rate = st.session_state.get("scn_spend_rate", 0.035)
+    else:
+        spend_rate = st.sidebar.slider(
+            "SWR (% of starting portfolio)", min_value=0.020, max_value=0.080, step=0.001,
+            format="%.3f",
+            key="scn_spend_rate",
+            help="Safe Withdrawal Rate as a fraction. 0.04 = 4% rule, 0.035 = conservative, 0.030 = lean-FIRE.",
+        )
+        # Live $ estimate based on the balances entered above.
+        _starting_estimate = float(cash) + float(taxable) + float(traditional) + float(roth) + float(hsa)
+        st.sidebar.caption(f"≈ ${_starting_estimate * spend_rate:,.0f}/yr at current portfolio")
+        target = st.session_state.get("scn_target_spend", 80_000)
 
     # A. Collapse "Real returns by asset class"
     with st.sidebar.expander("Real returns by asset class", expanded=False):
@@ -312,9 +342,43 @@ def render_sidebar() -> SimulationInputs:
     income_streams = _rows_to_income_streams(st.session_state.get("scn_income_streams", []))
     expense_streams = _rows_to_expense_streams(st.session_state.get("scn_expense_streams", []))
 
-    st.sidebar.markdown("### ACA assumption")
+    st.sidebar.markdown("### State & ACA")
+    state_code = st.sidebar.selectbox(
+        "State",
+        options=list(STATE_PRESETS.keys()),
+        format_func=lambda c: STATE_PRESETS[c].name,
+        key="scn_state_code",
+        help="Pluggable state-tax model. Pre-configured: 9 no-tax states + WA's 7%/$262k cap-gains rule. CUSTOM: enter your own flat rates.",
+    )
+    if state_code == "CUSTOM":
+        st.sidebar.caption(
+            "Flat marginal-rate approximation. Ignores brackets, SS exemption, "
+            "and pension exclusions — for ballpark planning only."
+        )
+        state_ord_rate = st.sidebar.number_input(
+            "State ordinary-income rate", min_value=0.0, max_value=0.15, step=0.005,
+            format="%.3f", key="scn_state_ordinary_rate",
+            help="Flat marginal rate on ordinary income. Use top-bracket rate as conservative proxy.",
+        )
+        state_cg_rate = st.sidebar.number_input(
+            "State LTCG rate", min_value=0.0, max_value=0.15, step=0.005,
+            format="%.3f", key="scn_state_ltcg_rate",
+            help="Flat rate on long-term capital gains. Many states tax LTCG as ordinary income — use the same rate.",
+        )
+        state_cg_threshold = st.sidebar.number_input(
+            "State LTCG threshold", min_value=0, step=10_000,
+            key="scn_state_ltcg_threshold",
+            help="Annual LTCG below this amount is exempt. Set 0 for none.",
+        )
+    else:
+        state_ord_rate = float(st.session_state.get("scn_state_ordinary_rate", 0.0))
+        state_cg_rate = float(st.session_state.get("scn_state_ltcg_rate", 0.0))
+        state_cg_threshold = float(st.session_state.get("scn_state_ltcg_threshold", 0.0))
+        if STATE_PRESETS[state_code].note:
+            st.sidebar.caption(STATE_PRESETS[state_code].note)
+
     aca_mode = st.sidebar.radio(
-        "Subsidy schedule",
+        "ACA subsidy schedule",
         options=["cap", "cliff"],
         format_func=lambda m: {"cap": "8.5% cap (IRA-extended)", "cliff": "Cliff at 400% FPL"}[m],
         key="scn_aca_mode",
@@ -347,6 +411,12 @@ def render_sidebar() -> SimulationInputs:
         ss_claim_age=int(ss_claim),
         income_streams=income_streams,
         expense_streams=expense_streams,
+        state_code=state_code,
+        state_ordinary_rate=state_ord_rate,
+        state_ltcg_rate=state_cg_rate,
+        state_ltcg_threshold=state_cg_threshold,
+        spend_mode=spend_mode,
+        spend_rate=float(spend_rate),
     )
     inputs_dict = {k: v for k, v in _dc.asdict(built_inputs).items() if k != "params"}
     st.sidebar.download_button(
