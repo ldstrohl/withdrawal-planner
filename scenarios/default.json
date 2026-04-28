@@ -19,5 +19,11 @@
   "ss_annual_benefit": 28000,
   "ss_claim_age": 67,
   "income_streams": [],
-  "expense_streams": []
+  "expense_streams": [],
+  "state_code": "WA",
+  "state_ordinary_rate": 0.0,
+  "state_ltcg_rate": 0.0,
+  "state_ltcg_threshold": 0.0,
+  "spend_mode": "fixed",
+  "spend_rate": 0.035
 }

@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from .accounts import Cash, HSA, Portfolio, RothIRA, Taxable, TraditionalIRA
 from .returns import ConstantReturns, ReturnsModel
+from .state_tax import resolve_state_params
 from .strategy import PlanResult, plan_year
 from .streams import ExpenseStream, IncomeStream, active_expense, active_income
 from .tax import TAX_PARAMS_2026, TaxParams, required_min_distribution
@@ -59,6 +60,12 @@ class SimulationInputs:
     ss_claim_age: int = 67
     income_streams: tuple = ()    # tuple of IncomeStream (real $)
     expense_streams: tuple = ()   # tuple of ExpenseStream (real $)
+    state_code: str = "WA"        # see planner.state_tax.STATE_PRESETS
+    state_ordinary_rate: float = 0.0    # used only when state_code == "CUSTOM"
+    state_ltcg_rate: float = 0.0
+    state_ltcg_threshold: float = 0.0
+    spend_mode: str = "fixed"     # "fixed" (uses target_spend) | "swr" (rate × starting NW)
+    spend_rate: float = 0.035     # used only when spend_mode == "swr"
 
 
 def build_portfolio(inputs: SimulationInputs) -> Portfolio:
@@ -125,6 +132,18 @@ def simulate(
     portfolio = build_portfolio(inputs)
     results: List[YearResult] = []
 
+    # Resolve scenario-wide derived params once.
+    state_params = resolve_state_params(
+        inputs.state_code,
+        custom_ordinary_rate=inputs.state_ordinary_rate,
+        custom_ltcg_rate=inputs.state_ltcg_rate,
+        custom_ltcg_threshold=inputs.state_ltcg_threshold,
+    )
+    if inputs.spend_mode == "swr":
+        effective_spend = portfolio.total * inputs.spend_rate
+    else:
+        effective_spend = inputs.target_spend
+
     for y in range(inputs.horizon_years):
         age = inputs.start_age + y
 
@@ -142,7 +161,7 @@ def simulate(
             portfolio=portfolio,
             age=age,
             year=y,
-            target_net=inputs.target_spend,
+            target_net=effective_spend,
             strategy_name=inputs.strategy,
             params=inputs.params,
             aca_mode=inputs.aca_mode,
@@ -152,6 +171,7 @@ def simulate(
             scheduled_income=sched_income,
             scheduled_taxable_income=sched_taxable,
             scheduled_expense=sched_expense,
+            state_params=state_params,
         )
 
         # 3+4. Apply.
@@ -178,7 +198,7 @@ def simulate(
                 ending_total=ending_total,
                 plan=plan,
                 snapshot=portfolio.snapshot(),
-                target_net=inputs.target_spend,
+                target_net=effective_spend,
                 withdrawal_rate=wr,
             )
         )

@@ -258,6 +258,49 @@ def test_expense_stream_increases_gross_need():
     assert b.plan.scheduled_expense == 15_000
 
 
+def test_state_tax_no_tax_states_zero():
+    from planner.state_tax import STATE_PRESETS, state_tax
+    for code in ("NONE", "TX", "FL", "NV", "AK", "SD", "TN", "WY"):
+        assert state_tax(100_000, 50_000, STATE_PRESETS[code]) == 0.0, code
+
+
+def test_state_tax_wa_preserves_legacy_behavior():
+    from planner.state_tax import STATE_PRESETS, state_tax
+    wa = STATE_PRESETS["WA"]
+    # Below threshold → 0
+    assert state_tax(50_000, 250_000, wa) == 0.0
+    # Above threshold → 7% on the excess only
+    out = state_tax(50_000, 300_000, wa)
+    assert approx(out, 0.07 * (300_000 - 262_000), tol=0.01)
+
+
+def test_state_tax_custom_flat_rates():
+    from planner.state_tax import resolve_state_params, state_tax
+    params = resolve_state_params("CUSTOM", custom_ordinary_rate=0.05, custom_ltcg_rate=0.05)
+    # 5% on $100k ord + 5% on $20k LTCG (no threshold) = $5k + $1k = $6k
+    out = state_tax(100_000, 20_000, params)
+    assert approx(out, 6_000, tol=0.01)
+
+
+def test_state_tax_threads_through_simulate():
+    from planner.simulate import SimulationInputs, simulate, summarize
+    s_wa = summarize(simulate(SimulationInputs(state_code="WA")))
+    s_tx = summarize(simulate(SimulationInputs(state_code="TX")))
+    # TX always 0; WA may be 0 or positive (depends on per-year LTCG vs threshold)
+    assert s_tx["total_state_tax"] == 0.0
+    assert s_wa["total_state_tax"] >= 0.0
+
+
+def test_swr_mode_resolves_to_rate_times_starting_total():
+    from planner.simulate import SimulationInputs, simulate
+    inp = SimulationInputs(spend_mode="swr", spend_rate=0.04, horizon_years=2)
+    r = simulate(inp)
+    starting = (inp.initial_cash + inp.initial_taxable + inp.initial_traditional
+                + inp.initial_roth + inp.initial_hsa)
+    expected = 0.04 * starting
+    assert approx(r[0].target_net, expected, tol=0.01), (r[0].target_net, expected)
+
+
 def test_streams_age_window_inclusive():
     """Stream is active when start_age <= age <= end_age, inactive otherwise."""
     from planner.simulate import SimulationInputs, simulate

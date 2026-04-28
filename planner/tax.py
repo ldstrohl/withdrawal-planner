@@ -259,11 +259,12 @@ def taxable_ss(ss_benefit: float, other_ordinary_income: float, ltcg: float) -> 
     return min(tier1 + tier2, 0.85 * ss_benefit)
 
 
-WA_LTCG_THRESHOLD = 262_000.0   # 2024 indexed (real-dollar approximation)
+# Kept for backward compatibility — new code should use planner.state_tax instead.
+WA_LTCG_THRESHOLD = 262_000.0
 WA_LTCG_RATE = 0.07
 
 
 def wa_ltcg_tax(ltcg: float) -> float:
-    """Washington state 7% capital-gains tax on LTCG above $262k threshold."""
+    """Deprecated: use planner.state_tax.state_tax with STATE_PRESETS["WA"]."""
     excess = max(ltcg - WA_LTCG_THRESHOLD, 0.0)
     return excess * WA_LTCG_RATE

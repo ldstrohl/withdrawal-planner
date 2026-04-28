@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from .accounts import Portfolio
+from .state_tax import STATE_PRESETS, StateTaxParams, state_tax as _state_tax_fn
 from .tax import (
     TAX_PARAMS_2026,
     TaxParams,
@@ -20,7 +21,6 @@ from .tax import (
     federal_tax,
     fpl_400_ceiling,
     taxable_ss,
-    wa_ltcg_tax,
     zero_ltcg_ceiling,
 )
 
@@ -197,6 +197,7 @@ def plan_year(
     scheduled_income: float = 0.0,
     scheduled_taxable_income: float = 0.0,
     scheduled_expense: float = 0.0,
+    state_params: StateTaxParams = STATE_PRESETS["WA"],
     max_iter: int = 40,
     tol: float = 1.0,
 ) -> PlanResult:
@@ -244,7 +245,7 @@ def plan_year(
         else:
             healthcare = aca_premium(magi, params, aca_mode)
 
-        state_tax_amt = wa_ltcg_tax(ltcg)
+        state_tax_amt = _state_tax_fn(ordinary_income, ltcg, state_params)
         new_gross = effective_target + tax["total"] + penalty + healthcare["out_of_pocket"] + state_tax_amt
 
         last = PlanResult(
