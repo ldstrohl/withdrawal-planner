@@ -51,6 +51,29 @@ TAX_PARAMS_2026 = TaxParams(
     label="2026 (single, projected from 2025 actuals)",
 )
 
+TAX_PARAMS_2026_MFJ = TaxParams(
+    standard_deduction=31_500.0,
+    ordinary_brackets=(
+        (23_850.0, 0.10),
+        (96_950.0, 0.12),
+        (206_700.0, 0.22),
+        (394_600.0, 0.24),
+        (501_050.0, 0.32),
+        (751_600.0, 0.35),
+        (INF, 0.37),
+    ),
+    ltcg_brackets=(
+        (96_700.0, 0.00),
+        (600_050.0, 0.15),
+        (INF, 0.20),
+    ),
+    # fpl_single holds household-of-2 FPL for MFJ (2025: $21,150 for a 2-person household).
+    fpl_single=21_150.0,
+    # benchmark_premium represents both spouses on the same unsubsidized benchmark plan (2x single).
+    benchmark_premium=16_000.0,
+    label="2026 MFJ (projected from 2025 actuals)",
+)
+
 
 def _apply_brackets(taxable: float, brackets: Tuple[Tuple[float, float], ...]) -> float:
     if taxable <= 0:
@@ -172,21 +195,43 @@ IRMAA_TIERS_SINGLE = (
     (float("inf"), 6_165.60 + 1_032.00),
 )
 
+# MFJ IRMAA thresholds (~2x single). Per-person surcharges are the same as single tiers.
+# (MAGI upper limit, per-person annual surcharge Part B + Part D combined)
+IRMAA_TIERS_MFJ = (
+    (212_000.0, 0.0),
+    (266_000.0, 1_028.40 + 165.60),
+    (334_000.0, 2_569.20 + 425.40),
+    (400_000.0, 4_110.00 + 686.40),
+    (750_000.0, 5_650.80 + 947.40),
+    (float("inf"), 6_165.60 + 1_032.00),
+)
 
-def medicare_premium(magi: float, age: int) -> dict:
+
+def medicare_premium(magi: float, age: int, filing_status: str = "single") -> dict:
     """Medicare Part B + D base + IRMAA surcharge.
 
     Caller is responsible for invoking only at age >= 65.
+    For filing_status="mfj": returns 2-spouse totals (base, irmaa_surcharge, out_of_pocket all doubled).
     Returns {"out_of_pocket", "irmaa_surcharge", "tier", "base"}.
     """
-    base = MEDICARE_BASE_ANNUAL + MEDICARE_PARTD_BASE
-    surcharge = 0.0
+    per_person_base = MEDICARE_BASE_ANNUAL + MEDICARE_PARTD_BASE
+    if filing_status == "mfj":
+        tiers = IRMAA_TIERS_MFJ
+    else:
+        tiers = IRMAA_TIERS_SINGLE
+    per_person_surcharge = 0.0
     tier = 0
-    for i, (upper, extra) in enumerate(IRMAA_TIERS_SINGLE):
+    for i, (upper, extra) in enumerate(tiers):
         if magi <= upper:
-            surcharge = extra
+            per_person_surcharge = extra
             tier = i
             break
+    if filing_status == "mfj":
+        spouses = 2
+    else:
+        spouses = 1
+    base = spouses * per_person_base
+    surcharge = spouses * per_person_surcharge
     return {
         "out_of_pocket": base + surcharge,
         "irmaa_surcharge": surcharge,
@@ -236,26 +281,36 @@ def required_min_distribution(traditional_balance: float, age: int) -> float:
     return traditional_balance / divisor
 
 
-def taxable_ss(ss_benefit: float, other_ordinary_income: float, ltcg: float) -> float:
-    """IRS provisional-income test for SS taxation (single filer, 2025 thresholds, NOT inflation-indexed by IRS).
+def taxable_ss(
+    ss_benefit: float,
+    other_ordinary_income: float,
+    ltcg: float,
+    filing_status: str = "single",
+) -> float:
+    """IRS provisional-income test for SS taxation (2025 thresholds, NOT inflation-indexed by IRS).
 
     provisional = other_ordinary_income + ltcg + 0.5 * ss_benefit
-    Threshold 1: $25,000 — below this, none of SS is taxable.
-    Threshold 2: $34,000 — between, up to 50% of SS or 50% of (provisional - 25k), lesser.
-    Above $34,000 — up to 85% of SS, plus the 50% phase-in piece.
+
+    Single thresholds: $25,000 (lower), $34,000 (upper); mid-tier max $4,500.
+    MFJ thresholds: $32,000 (lower), $44,000 (upper); mid-tier max $6,000.
+
     Returns dollars of SS that are added to ordinary taxable income.
     """
     if ss_benefit <= 0:
         return 0.0
     provisional = other_ordinary_income + ltcg + 0.5 * ss_benefit
-    if provisional <= 25_000:
+    if filing_status == "mfj":
+        lower, upper, mid_max = 32_000, 44_000, 6_000.0
+    else:
+        lower, upper, mid_max = 25_000, 34_000, 4_500.0
+    if provisional <= lower:
         return 0.0
-    if provisional <= 34_000:
-        return min(0.5 * ss_benefit, 0.5 * (provisional - 25_000))
-    # Above 34k: 85% of (provisional - 34k), plus the lesser of 50% SS or $4,500 (= 0.5*(34k-25k)),
+    if provisional <= upper:
+        return min(0.5 * ss_benefit, 0.5 * (provisional - lower))
+    # Above upper threshold: 85% of (provisional - upper), plus lesser of 50% SS or mid_max,
     # capped at 85% of total SS benefit.
-    tier2 = 0.85 * (provisional - 34_000)
-    tier1 = min(0.5 * ss_benefit, 4_500.0)
+    tier2 = 0.85 * (provisional - upper)
+    tier1 = min(0.5 * ss_benefit, mid_max)
     return min(tier1 + tier2, 0.85 * ss_benefit)
 
 
@@ -268,3 +323,10 @@ def wa_ltcg_tax(ltcg: float) -> float:
     """Deprecated: use planner.state_tax.state_tax with STATE_PRESETS["WA"]."""
     excess = max(ltcg - WA_LTCG_THRESHOLD, 0.0)
     return excess * WA_LTCG_RATE
+
+
+def tax_params_for(filing_status: str) -> TaxParams:
+    """Return the TaxParams for the given filing status. 'single' or 'mfj'."""
+    if filing_status == "mfj":
+        return TAX_PARAMS_2026_MFJ
+    return TAX_PARAMS_2026

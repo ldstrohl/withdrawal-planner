@@ -198,6 +198,7 @@ def plan_year(
     scheduled_taxable_income: float = 0.0,
     scheduled_expense: float = 0.0,
     state_params: StateTaxParams = STATE_PRESETS["WA"],
+    filing_status: str = "single",
     max_iter: int = 40,
     tol: float = 1.0,
 ) -> PlanResult:
@@ -230,7 +231,7 @@ def plan_year(
 
         # Only the taxable portion of SS enters ordinary income.
         other_ord = conversion + w.traditional + w.hsa + scheduled_taxable_income
-        ss_taxable = taxable_ss(ss_income, other_ord, ltcg)
+        ss_taxable = taxable_ss(ss_income, other_ord, ltcg, filing_status)
         # Ordinary income = conversion + traditional withdrawals + non-qualified HSA distribution
         # + scheduled taxable income streams (rental, pension, etc.).
         # (HSA non-medical pre-65 also incurs 20% penalty; we ignore HSA penalty for v1
@@ -241,7 +242,7 @@ def plan_year(
         penalty = early_withdrawal_penalty(w.traditional, age)
         magi = ordinary_income + ltcg
         if age >= 65:
-            healthcare = medicare_premium(magi, age)
+            healthcare = medicare_premium(magi, age, filing_status)
         else:
             healthcare = aca_premium(magi, params, aca_mode)
 

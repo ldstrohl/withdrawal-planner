@@ -19,7 +19,7 @@ from .returns import ConstantReturns, ReturnsModel
 from .state_tax import resolve_state_params
 from .strategy import PlanResult, plan_year
 from .streams import ExpenseStream, IncomeStream, active_expense, active_income
-from .tax import TAX_PARAMS_2026, TaxParams, required_min_distribution
+from .tax import TAX_PARAMS_2026, TaxParams, required_min_distribution, tax_params_for
 
 
 @dataclass
@@ -55,6 +55,7 @@ class SimulationInputs:
     strategy: str = "bridge_optimal"
     custom_conversion: Optional[float] = None
     aca_mode: str = "cap"
+    filing_status: str = "single"     # "single" | "mfj"
     params: TaxParams = field(default_factory=lambda: TAX_PARAMS_2026)
     ss_annual_benefit: float = 0.0
     ss_claim_age: int = 67
@@ -139,6 +140,8 @@ def simulate(
         custom_ltcg_rate=inputs.state_ltcg_rate,
         custom_ltcg_threshold=inputs.state_ltcg_threshold,
     )
+    # filing_status is the source of truth; inputs.params is legacy and overridden here.
+    tax_params = tax_params_for(inputs.filing_status)
     if inputs.spend_mode == "swr":
         effective_spend = portfolio.total * inputs.spend_rate
     else:
@@ -163,7 +166,7 @@ def simulate(
             year=y,
             target_net=effective_spend,
             strategy_name=inputs.strategy,
-            params=inputs.params,
+            params=tax_params,
             aca_mode=inputs.aca_mode,
             custom_conversion=inputs.custom_conversion,
             ss_income=ss,
@@ -172,6 +175,7 @@ def simulate(
             scheduled_taxable_income=sched_taxable,
             scheduled_expense=sched_expense,
             state_params=state_params,
+            filing_status=inputs.filing_status,
         )
 
         # 3+4. Apply.
