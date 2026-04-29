@@ -7,11 +7,18 @@ deterministic, Monte Carlo (lognormal), and historical (Shiller) returns modes.
 
 ## Quickstart
 
+Latest deployment:
+https://fi-withdrawal-planner.streamlit.app/ 
+
+
+Local installation:
 ```sh
+git clone https://github.com/ldstrohl/withdrawal-planner.git
+cd withdrawal-planner
 pip install --user -r requirements.txt   # add --break-system-packages on PEP-668 systems
 streamlit run app.py
-pytest                                    # tax-engine + strategy + streams tests
 ```
+The app launches a local server accessed in a browser at localhost
 
 The app loads `scenarios/default.json` as the startup scenario. To use your own:
 copy or rename your scenario file to `scenarios/default.local.json` (gitignored) and the
