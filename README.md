@@ -38,6 +38,7 @@ loader will prefer it. Otherwise, use the in-app sidebar to import/export JSON.
 
 - `bridge_optimal` — convert Trad→Roth up to lesser of (0% LTCG ceiling, 400% FPL ceiling), floor at standard deduction
 - `bridge_guarded` — like `bridge_optimal` but caps each year's conversion at `traditional_balance / years_to_60` so bracket-driven conversion can't drain Trad faster than the bridge years remaining (sequence-of-returns insurance)
+- `bridge_responsive` — scales between `minimal_convert` (no drawdown) and `bridge_optimal` (≥20% drawdown from peak) by current drawdown. Converts cheaply when prices are depressed; preserves Trad and avoids tax-prepay during good runs. Targets preservation, not depletion.
 - `minimal_convert` — fill the standard deduction only (~$15.7k/yr)
 - `aggressive_convert` — fill the top of the 12% bracket every year regardless of LTCG impact
 - `custom` — user-specified annual conversion amount
@@ -46,7 +47,7 @@ loader will prefer it. Otherwise, use the in-app sidebar to import/export JSON.
 
 - **Constant** — single deterministic 7%/2%/0% real (default for the single-scenario tab)
 - **Lognormal** — synthetic, configurable σ + correlation; runs N stochastic paths
-- **Historical (rolling start)** — replays each calendar start year 1928 onward through the horizon; n_paths bounded by data coverage and horizon length. Path-inspector lets you pick worst-failing/median/best/by-index and see the underlying account-balance trajectory.
+- **Historical (rolling start)** — replays each calendar start year 1928 onward through the horizon; n_paths bounded by data coverage and horizon length (shorter horizons yield more sequences — a 45y horizon gives ~51 paths vs ~36 at 60y). Path-inspector lets you pick worst-failing/median/best/by-index and see the underlying account-balance trajectory.
 
 ## Spending input
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .returns import ReturnsModel
-from .simulate import SimulationInputs, YearResult, simulate, summarize
+from .simulate import SimulationInputs, YearResult, build_portfolio, simulate, summarize
 
 
 @dataclass
@@ -32,6 +32,8 @@ class MCSummary:
     p5_ending: float
     p95_ending: float
     median_depletion_age: Optional[float]
+    preservation_rate: float = 0.0
+    starting_total: float = 0.0
     paths: List[PathSummary] = field(default_factory=list)
     age: List[int] = field(default_factory=list)
     p5_balance: List[float] = field(default_factory=list)
@@ -58,6 +60,7 @@ def run_monte_carlo(
     n_runs: int = 1000,
 ) -> MCSummary:
     """Run n_runs independent paths and collect summary stats per year and overall."""
+    starting_total = build_portfolio(inputs).total
     per_year_balances: List[List[float]] = [[] for _ in range(inputs.horizon_years)]
     paths: List[PathSummary] = []
 
@@ -80,6 +83,7 @@ def run_monte_carlo(
             per_year_balances[y].append(0.0)
 
     success = sum(1 for p in paths if p.total_shortfall <= 0.01) / n_runs
+    preservation = sum(1 for p in paths if p.ending_total >= starting_total) / n_runs
     endings = sorted(p.ending_total for p in paths)
     median_ending = _percentile(endings, 0.5)
     p5_ending = _percentile(endings, 0.05)
@@ -110,6 +114,8 @@ def run_monte_carlo(
         p5_ending=p5_ending,
         p95_ending=p95_ending,
         median_depletion_age=median_depletion_age,
+        preservation_rate=preservation,
+        starting_total=starting_total,
         paths=paths,
         age=age,
         p5_balance=p5,

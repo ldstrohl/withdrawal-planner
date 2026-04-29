@@ -26,6 +26,7 @@ st.set_page_config(page_title="Withdrawal Planner", layout="wide", initial_sideb
 STRATEGY_DISPLAY = {
     "bridge_optimal": "Bridge optimal",
     "bridge_guarded": "Bridge guarded",
+    "bridge_responsive": "Bridge responsive",
     "minimal_convert": "Minimal convert",
     "aggressive_convert": "Aggressive convert",
     "custom": "Custom",
@@ -204,6 +205,7 @@ def render_sidebar() -> SimulationInputs:
     # Initialize session state defaults so widgets can use key= only (no value=)
     for k, v in _SIDEBAR_DEFAULTS.items():
         st.session_state.setdefault(f"scn_{k}", v)
+    st.session_state.setdefault("scn_optimization_target", "depletion")
 
     # G. Scenario save/load — top of sidebar
     with st.sidebar.expander("Scenario (save / load)", expanded=False):
@@ -388,6 +390,19 @@ def render_sidebar() -> SimulationInputs:
             "400% FPL. Use 'cliff' for conservative planning if you expect the IRA "
             "expansion to lapse."
         ),
+    )
+
+    st.sidebar.markdown("### Optimization target")
+    st.sidebar.radio(
+        "Optimization target",
+        options=["depletion", "preservation"],
+        format_func=lambda s: {"depletion": "Depletion (success rate)",
+                                "preservation": "Preservation (real value sustained)"}[s],
+        key="scn_optimization_target",
+        help="Depletion: % of paths that don't run out of money. "
+             "Preservation: % of paths whose ending real balance ≥ starting. "
+             "Use preservation for over-capitalized portfolios where success rate is "
+             "saturated near 100%.",
     )
 
     # G. Download button for scenario save
@@ -605,6 +620,7 @@ def strategies_view(base: SimulationInputs) -> None:
             mc_results[name] = cached_mc_historical(inputs=inp, start_year_floor=1928)
 
     mc_enabled = model_choice in ("lognormal", "historical")
+    optimization_target = st.session_state.get("scn_optimization_target", "depletion")
 
     # Lifetime summary table
     rows = []
@@ -623,9 +639,17 @@ def strategies_view(base: SimulationInputs) -> None:
         }
         if mc_enabled:
             mc = mc_results.get(name)
-            row["Success rate"] = f"{mc.success_rate:.0%}" if mc else "—"
+            if optimization_target == "preservation":
+                row["Preservation rate"] = f"{mc.preservation_rate:.0%}" if mc else "—"
+            else:
+                row["Success rate"] = f"{mc.success_rate:.0%}" if mc else "—"
         rows.append(row)
     st.markdown("##### Lifetime summary")
+    if mc_enabled:
+        if optimization_target == "preservation":
+            st.markdown("*Optimization target: **Preservation** (% of paths ending ≥ starting real balance)*")
+        else:
+            st.markdown("*Optimization target: **Depletion** (% of paths that don't run out of money)*")
     st.dataframe(rows, hide_index=True, use_container_width=True)
 
     # Comparison charts (suppressed when exactly 1 strategy)
@@ -648,20 +672,29 @@ def strategies_view(base: SimulationInputs) -> None:
 
     # MC-only outputs
     if mc_enabled and mc_results:
-        # Per-strategy success-rate callouts
+        # Per-strategy metric callouts
         for name, mc in mc_results.items():
             display = STRATEGY_DISPLAY.get(name, name)
-            if mc.success_rate < 0.80:
-                st.warning(
-                    f"**{display}**: success rate {mc.success_rate:.0%} is below 80% — "
-                    f"sequence-of-returns risk is meaningful. Consider lowering spend or extending the bridge."
-                )
-            elif mc.success_rate < 0.95:
-                st.info(
-                    f"**{display}**: success rate {mc.success_rate:.0%} — meaningful but not robust to severe sequences."
-                )
+            if optimization_target == "preservation":
+                rate = mc.preservation_rate
+                label = "Preservation rate"
+                low_msg = (f"**{display}**: {label} {rate:.0%} is below 80% — "
+                           f"most paths fail to sustain real portfolio value. Consider lower spend or a more conservative strategy.")
+                mid_msg = f"**{display}**: {label} {rate:.0%} — meaningful but not robust to severe sequences."
+                high_msg = f"**{display}**: {label} {rate:.0%} — robust to historical-style volatility."
             else:
-                st.success(f"**{display}**: success rate {mc.success_rate:.0%} — robust to historical-style volatility.")
+                rate = mc.success_rate
+                label = "Success rate"
+                low_msg = (f"**{display}**: {label} {rate:.0%} is below 80% — "
+                           f"sequence-of-returns risk is meaningful. Consider lowering spend or extending the bridge.")
+                mid_msg = f"**{display}**: {label} {rate:.0%} — meaningful but not robust to severe sequences."
+                high_msg = f"**{display}**: {label} {rate:.0%} — robust to historical-style volatility."
+            if rate < 0.80:
+                st.warning(low_msg)
+            elif rate < 0.95:
+                st.info(mid_msg)
+            else:
+                st.success(high_msg)
 
         # Per-strategy fan charts
         st.markdown("##### Monte Carlo fan charts")

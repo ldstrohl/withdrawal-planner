@@ -144,6 +144,7 @@ def simulate(
     else:
         effective_spend = inputs.target_spend
 
+    peak_total = portfolio.total
     for y in range(inputs.horizon_years):
         age = inputs.start_age + y
 
@@ -151,6 +152,8 @@ def simulate(
         starting_total = portfolio.total
         year_returns = returns_model.get(year_index=y, path_index=path_index)
         portfolio.apply_growth(year_returns)
+        peak_total = max(peak_total, portfolio.total)
+        drawdown_from_peak = max(0.0, 1.0 - portfolio.total / peak_total) if peak_total > 0 else 0.0
 
         # 2. Plan the year.
         ss = inputs.ss_annual_benefit if age >= inputs.ss_claim_age else 0.0
@@ -172,6 +175,7 @@ def simulate(
             scheduled_taxable_income=sched_taxable,
             scheduled_expense=sched_expense,
             state_params=state_params,
+            drawdown_from_peak=drawdown_from_peak,
         )
 
         # 3+4. Apply.

@@ -12,7 +12,7 @@
   "cash_return": 0.0,
   "stock_allocation": 0.85,
   "start_age": 42,
-  "horizon_years": 50,
+  "horizon_years": 45,
   "strategy": "bridge_guarded",
   "custom_conversion": null,
   "aca_mode": "cap",
