@@ -25,5 +25,6 @@
   "state_ltcg_rate": 0.0,
   "state_ltcg_threshold": 0.0,
   "spend_mode": "fixed",
-  "spend_rate": 0.035
+  "spend_rate": 0.035,
+  "filing_status": "single"
 }

@@ -1,9 +1,9 @@
 # Early Retirement Withdrawal Planner
 
-Tax- and penalty-optimized withdrawal simulator for early retirees. Single filer on
-ACA marketplace healthcare; pluggable state-tax model (9 no-tax states + WA + CUSTOM).
-Real-dollar, year-by-year simulation with deterministic, Monte Carlo (lognormal), and
-historical (Shiller) returns modes.
+Tax- and penalty-optimized withdrawal simulator for early retirees. Single or
+married-filing-jointly on ACA marketplace healthcare; pluggable state-tax model
+(9 no-tax states + WA + CUSTOM). Real-dollar, year-by-year simulation with
+deterministic, Monte Carlo (lognormal), and historical (Shiller) returns modes.
 
 ## Quickstart
 
@@ -70,7 +70,7 @@ planning, not for filing prep.
 
 ## Key assumptions
 
-- Single filer; federal brackets are 2026 estimates (2025 actuals projected forward)
+- Single or MFJ filing status; federal brackets are 2026 estimates (2025 actuals projected forward)
 - All values are real (inflation-adjusted) dollars
 - Growth applied at start of year, then withdrawal/conversion/RMD
 - 10% early-withdrawal penalty on Traditional pre-age-60 (proxy for 59.5)
@@ -80,3 +80,7 @@ planning, not for filing prep.
 - Medicare IRMAA uses current-year MAGI (IRS actually uses MAGI from 2 years prior)
 - ACA: IRA-extended sliding-scale schedule (`cap`) or pre-IRA cliff (`cliff`) on $8k benchmark unsubsidized premium
 - Historical mode: real cash held at 0% (Shiller doesn't publish T-bill); edit the CSV to override
+- MFJ: doubles standard deduction, widens ordinary + LTCG brackets, uses household-of-2 FPL,
+  MFJ SS thresholds (32k/44k), and 2 Medicare premiums post-65 with MFJ IRMAA tiers. The
+  `ss_annual_benefit` field is interpreted as the combined household amount; model spouse 2
+  separately as an income stream if claim ages differ.
