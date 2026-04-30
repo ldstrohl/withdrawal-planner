@@ -55,6 +55,7 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
     "ss_annual_benefit": 0,
     "ss_claim_age": 67,
     "aca_mode": "cap",
+    "filing_status": "single",
     "income_streams": [],
     "expense_streams": [],
     "state_code": "WA",
@@ -345,6 +346,18 @@ def render_sidebar() -> SimulationInputs:
     expense_streams = _rows_to_expense_streams(st.session_state.get("scn_expense_streams", []))
 
     st.sidebar.markdown("### State & ACA")
+    filing_status = st.sidebar.radio(
+        "Filing status",
+        options=["single", "mfj"],
+        format_func=lambda s: {"single": "Single", "mfj": "Married filing jointly"}[s],
+        key="scn_filing_status",
+        help=(
+            "MFJ uses 2026 MFJ federal brackets, doubled standard deduction (~$31.5k), "
+            "household-of-2 FPL for ACA, MFJ Social Security thresholds (32k/44k), and "
+            "two Medicare premiums post-65. SS benefit field is interpreted as combined "
+            "household amount; for split-claim spouses, add a second SS as an income stream."
+        ),
+    )
     state_code = st.sidebar.selectbox(
         "State",
         options=list(STATE_PRESETS.keys()),
@@ -422,6 +435,7 @@ def render_sidebar() -> SimulationInputs:
         start_age=int(start_age),
         horizon_years=int(horizon),
         aca_mode=aca_mode,
+        filing_status=filing_status,
         ss_annual_benefit=float(ss_benefit),
         ss_claim_age=int(ss_claim),
         income_streams=income_streams,
@@ -771,6 +785,7 @@ def inputs_summary_view(base: SimulationInputs) -> None:
         ("SS claim age", base.ss_claim_age),
         ("State", state_label),
         ("ACA mode", base.aca_mode),
+        ("Filing status", "Married filing jointly" if base.filing_status == "mfj" else "Single"),
         ("Tax params", base.params.label),
     ]
     for label, value in items:
@@ -1014,6 +1029,34 @@ high-tax state like CA or NY, entering the top marginal rate as the flat rate is
 *conservative* approximation — your actual state tax will usually be lower because
 withdrawal-era ordinary income often falls below top brackets and SS/pension exclusions
 apply. For state-specific filing prep, consult a tax pro.
+
+---
+
+### Filing status (single vs MFJ)
+
+The sidebar **Filing status** radio switches between two tax parameter sets.
+
+**MFJ differences from single:**
+- **Federal brackets:** wider ordinary-income and LTCG brackets; standard deduction ~$31,500
+  (~2× single's ~$15,750). More ordinary income fits in the 0% and 12% brackets.
+- **ACA:** household-of-2 FPL (~$21,150 vs ~$15,060 for one person); benchmark premium
+  is set to ~$16,000 (covering both spouses). The subsidy curve shifts right, so the same
+  MAGI buys more subsidy, but the higher benchmark means ACA costs are larger in absolute
+  dollars above the cap.
+- **Social Security taxation:** provisional-income thresholds are $32,000 / $44,000
+  (vs $25,000 / $34,000 single). More room for SS to remain partially non-taxable.
+- **Medicare (post-65):** both spouses are on Medicare — cost is doubled. Each spouse
+  pays their own Part B + Part D + IRMAA per-person surcharge. IRMAA tiers are
+  approximately 2× the single thresholds, so a given MAGI lands in a similar tier but
+  the dollar cost is two premiums.
+
+**Model caveats:**
+- The engine treats the household as a unit. The `ss_annual_benefit` field is interpreted
+  as the combined household SS amount. If spouses claim at different ages or have very
+  different individual benefits, model spouse 2 as a separate income stream for accurate
+  timing.
+- Washington's $262k LTCG threshold applies per filing unit and does not change under MFJ
+  — a couple filing jointly shares the same $262k exemption as a single filer.
 
 ---
 

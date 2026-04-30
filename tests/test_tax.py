@@ -506,3 +506,104 @@ def test_preservation_rate_basic():
     assert 0.0 <= mc.preservation_rate <= 1.0
     # With 0% returns and spending, portfolio shrinks: expect 0% preservation
     assert mc.preservation_rate == 0.0
+
+
+# --- MFJ tests ---------------------------------------------------------------
+
+def test_mfj_standard_deduction_only_conversion_is_zero_tax():
+    from planner.tax import TAX_PARAMS_2026_MFJ
+    out = federal_tax(31_500, 0, TAX_PARAMS_2026_MFJ)
+    assert out["total"] == 0.0
+
+
+def test_mfj_bracket_threshold():
+    from planner.tax import TAX_PARAMS_2026_MFJ
+    # taxable = 50_000 - 31_500 = 18_500, all in 10% bracket -> tax = 1_850
+    out = federal_tax(50_000, 0, TAX_PARAMS_2026_MFJ)
+    assert approx(out["total"], 1_850.0, tol=1)
+
+
+def test_mfj_zero_ltcg_ceiling_wider_than_single():
+    from planner.tax import TAX_PARAMS_2026_MFJ
+    assert zero_ltcg_ceiling(0, TAX_PARAMS_2026_MFJ) > zero_ltcg_ceiling(0, TAX_PARAMS_2026)
+
+
+def test_mfj_fpl_400_ceiling():
+    from planner.tax import TAX_PARAMS_2026_MFJ
+    assert fpl_400_ceiling(TAX_PARAMS_2026_MFJ) == 4 * 21_150
+
+
+def test_taxable_ss_mfj_higher_threshold_than_single():
+    # provisional = 20_000 + 20_000 + 0.5 * 20_000 = 50_000... wait, let me use 20_000 SS
+    # provisional = 20_000 (other) + 0 (ltcg) + 0.5 * 20_000 (ss) = 30_000
+    # single: 30_000 > 25_000 -> taxable > 0
+    # mfj:   30_000 < 32_000 -> taxable == 0
+    assert taxable_ss(20_000, 20_000, 0, "single") > 0
+    assert taxable_ss(20_000, 20_000, 0, "mfj") == 0.0
+
+
+def test_taxable_ss_mfj_above_44k_uses_mfj_thresholds():
+    # ss=30_000, other_ord=60_000, ltcg=0
+    # provisional = 60_000 + 0 + 15_000 = 75_000 > 44_000
+    # tier1 = min(0.5 * 30_000, 6_000) = 6_000
+    # tier2 = 0.85 * (75_000 - 44_000) = 0.85 * 31_000 = 26_350
+    # sum = 32_350; cap = 0.85 * 30_000 = 25_500 -> returns 25_500
+    result = taxable_ss(30_000, 60_000, 0, "mfj")
+    assert approx(result, 25_500.0, tol=1)
+
+
+def test_medicare_mfj_doubles_base_at_low_magi():
+    from planner.tax import medicare_premium
+    single = medicare_premium(80_000, 66, "single")["out_of_pocket"]
+    mfj = medicare_premium(80_000, 66, "mfj")["out_of_pocket"]
+    assert approx(mfj, 2 * single, tol=1)
+
+
+def test_medicare_mfj_irmaa_threshold_higher_than_single():
+    from planner.tax import medicare_premium
+    # 120_000 > 106_000 single threshold -> tier 1 for single
+    assert medicare_premium(120_000, 66, "single")["tier"] == 1
+    # 120_000 < 212_000 MFJ threshold -> tier 0 for MFJ
+    assert medicare_premium(120_000, 66, "mfj")["tier"] == 0
+
+
+def test_tax_params_for_dispatches_correctly():
+    from planner.tax import tax_params_for, TAX_PARAMS_2026, TAX_PARAMS_2026_MFJ
+    assert tax_params_for("single") is TAX_PARAMS_2026
+    assert tax_params_for("mfj") is TAX_PARAMS_2026_MFJ
+    assert tax_params_for("anything else") is TAX_PARAMS_2026
+
+
+def test_taxable_ss_default_filing_status_is_single_backcompat():
+    assert taxable_ss(20_000, 20_000, 0) == taxable_ss(20_000, 20_000, 0, "single")
+
+
+def test_mfj_lower_federal_tax_than_single_at_same_inputs():
+    """At identical inputs, MFJ has wider brackets + bigger std ded -> lower fed tax."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    base_kwargs = dict(
+        initial_cash=20_000, initial_taxable=200_000, taxable_basis=100_000,
+        initial_traditional=500_000, initial_roth=0, initial_hsa=0,
+        target_spend=80_000, start_age=50, horizon_years=5,
+        strategy="aggressive_convert",
+    )
+    s_single = summarize(simulate(SimulationInputs(filing_status="single", **base_kwargs)))
+    s_mfj = summarize(simulate(SimulationInputs(filing_status="mfj", **base_kwargs)))
+    assert s_mfj["total_federal_tax"] < s_single["total_federal_tax"], (s_mfj, s_single)
+
+
+def test_mfj_medicare_oop_roughly_double_single_at_age_66():
+    """At age 66 + low MAGI, MFJ medicare OOP should be ~2x single (both spouses)."""
+    from planner.simulate import SimulationInputs, simulate
+    base_kwargs = dict(
+        initial_cash=20_000, initial_taxable=300_000, taxable_basis=300_000,
+        initial_traditional=0, initial_roth=0, initial_hsa=0,
+        target_spend=40_000, start_age=66, horizon_years=2,
+        strategy="minimal_convert",
+        ss_annual_benefit=0, ss_claim_age=67,
+    )
+    r_single = simulate(SimulationInputs(filing_status="single", **base_kwargs))[0]
+    r_mfj = simulate(SimulationInputs(filing_status="mfj", **base_kwargs))[0]
+    # Both should be in tier 0 (low MAGI), so MFJ should be ~2x single base.
+    assert r_mfj.plan.healthcare_oop > 1.8 * r_single.plan.healthcare_oop
+    assert r_mfj.plan.healthcare_oop < 2.2 * r_single.plan.healthcare_oop
