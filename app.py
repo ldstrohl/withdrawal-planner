@@ -866,6 +866,31 @@ remaining), the cap binds and conversion sizes drop, preserving the post-ladder 
 Post-60 the cap relaxes (no penalty risk). Best choice when robustness across
 sequence-of-returns scenarios matters more than maximum Roth stacking.
 
+#### `bridge_responsive` — scale by drawdown from peak
+Blends between **`minimal_convert`** (no drawdown) and **`bridge_optimal`** (≥20% drawdown
+from peak). Each year:
+
+```
+target = minimal_target + blend × (bracket_target − minimal_target)
+blend  = min(drawdown_from_peak / 0.20, 1.0)
+```
+
+**The rationale:** a converted dollar buys more future-recovery shares when prices are
+depressed than when the portfolio is at a peak. A 30% drawdown means the same tax bill
+converts ~43% more shares. Conversely, converting at an all-time high pre-pays tax on
+dollars that may subsequently fall — the same failure mode that makes `bridge_optimal`
+costly in historical crash sequences.
+
+Unlike `bridge_guarded`, there is no explicit Trad-reserve cap. Instead, the drawdown signal
+naturally suppresses conversion in flat or rising markets and amplifies it when prices are
+already down. The two strategies converge in bad sequences and diverge in good ones:
+`bridge_guarded` caps by Trad balance mechanics; `bridge_responsive` caps by absence of
+drawdown signal.
+
+**Best for:** over-capitalized portfolios where the goal is preserving real net worth
+rather than surviving a funding gap. If you don't need to spend down the portfolio,
+converting aggressively at peak prices is a tax-efficiency leak with no upside.
+
 #### `minimal_convert` — fill the standard deduction only
 Convert exactly `standard_deduction` (~$15.7k) every year. This is **always free**: the
 deduction wipes out the ordinary tax on it, and it's small enough not to push LTCG into
@@ -901,10 +926,15 @@ vs **success rate under stochastic / historical returns**:
 - `bridge_guarded` accepts a small reduction in deterministic upside in exchange for an
   explicit reserve cap that prevents the Trad-drain failure mode. Often the dominant choice
   on robustness-weighted portfolios.
+- `bridge_responsive` converts little during good runs and aggressively during drawdowns.
+  Often matches `bridge_optimal` on preservation rate with slightly higher median ending
+  balance; less protective than `bridge_guarded` in worst-case sequences. Best for
+  over-capitalized portfolios where the optimization target is preservation, not depletion.
 
 There is no single "right" answer. Pick `aggressive` for terminal wealth in good times,
-`bridge_guarded` or `minimal` for survival in bad sequences, `bridge_optimal` if you
-believe you'll experience close to long-run-mean returns.
+`bridge_guarded` or `minimal` for survival in bad sequences, `bridge_responsive` if you are
+over-capitalized and targeting real-value preservation, `bridge_optimal` if you believe
+returns will be close to the long-run mean.
 
 ---
 
