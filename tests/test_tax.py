@@ -429,6 +429,85 @@ def test_rmd_excess_credits_cash():
     assert found_surplus, "Expected at least one year where RMD overshoots gross need"
 
 
+# --- bridge_responsive tests ------------------------------------------------
+
+def _make_portfolio_with_trad(trad_balance: float = 500_000):
+    from planner.accounts import Cash, HSA, Portfolio, RothIRA, Taxable, TraditionalIRA
+    return Portfolio(
+        cash=Cash(balance=0),
+        taxable=Taxable(balance=0, basis=0),
+        traditional=TraditionalIRA(balance=trad_balance),
+        roth=RothIRA(contributions=0, earnings=0),
+        hsa=HSA(balance=0),
+    )
+
+
+def test_bridge_responsive_zero_drawdown_minimal():
+    """At drawdown=0, bridge_responsive target equals standard_deduction."""
+    from planner.strategy import _conversion_for_strategy
+    portfolio = _make_portfolio_with_trad(500_000)
+    result = _conversion_for_strategy(
+        "bridge_responsive", portfolio, age=40,
+        ltcg_estimate=0, params=TAX_PARAMS_2026, custom_amount=None,
+        drawdown_from_peak=0.0,
+    )
+    assert approx(result, TAX_PARAMS_2026.standard_deduction, tol=1), result
+
+
+def test_bridge_responsive_full_drawdown_bridge_optimal():
+    """At drawdown=0.20, bridge_responsive target equals bridge_optimal target."""
+    from planner.strategy import _conversion_for_strategy
+    portfolio = _make_portfolio_with_trad(500_000)
+    ltcg_estimate = 5_000  # small, doesn't bind the LTCG ceiling
+    result_responsive = _conversion_for_strategy(
+        "bridge_responsive", portfolio, age=40,
+        ltcg_estimate=ltcg_estimate, params=TAX_PARAMS_2026, custom_amount=None,
+        drawdown_from_peak=0.20,
+    )
+    result_optimal = _conversion_for_strategy(
+        "bridge_optimal", portfolio, age=40,
+        ltcg_estimate=ltcg_estimate, params=TAX_PARAMS_2026, custom_amount=None,
+    )
+    assert approx(result_responsive, result_optimal, tol=1), (result_responsive, result_optimal)
+
+
+def test_bridge_responsive_half_drawdown_midpoint():
+    """At drawdown=0.10, bridge_responsive target is the midpoint of minimal and bridge_optimal."""
+    from planner.strategy import _conversion_for_strategy
+    portfolio = _make_portfolio_with_trad(500_000)
+    ltcg_estimate = 5_000
+    minimal = TAX_PARAMS_2026.standard_deduction
+    result_optimal = _conversion_for_strategy(
+        "bridge_optimal", portfolio, age=40,
+        ltcg_estimate=ltcg_estimate, params=TAX_PARAMS_2026, custom_amount=None,
+    )
+    expected_midpoint = minimal + 0.5 * (result_optimal - minimal)
+    result_responsive = _conversion_for_strategy(
+        "bridge_responsive", portfolio, age=40,
+        ltcg_estimate=ltcg_estimate, params=TAX_PARAMS_2026, custom_amount=None,
+        drawdown_from_peak=0.10,
+    )
+    assert approx(result_responsive, expected_midpoint, tol=1), (result_responsive, expected_midpoint)
+
+
+def test_preservation_rate_basic():
+    """preservation_rate equals fraction of paths with ending_total >= starting_total."""
+    from planner.montecarlo import MCSummary, PathSummary, run_monte_carlo
+    from planner.simulate import SimulationInputs, build_portfolio
+    from planner.returns import ConstantReturns
+
+    # Use a small deterministic MC: constant 0% returns, tiny horizon.
+    # With 0% real returns and positive withdrawals the portfolio shrinks every year,
+    # so ending_total < starting_total for all paths -> preservation_rate == 0.
+    inputs = SimulationInputs(horizon_years=5, stock_return=0.0, bond_return=0.0, cash_return=0.0)
+    model = ConstantReturns(stocks=0.0, bonds=0.0, cash=0.0)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=5)
+    assert mc.starting_total == build_portfolio(inputs).total
+    assert 0.0 <= mc.preservation_rate <= 1.0
+    # With 0% returns and spending, portfolio shrinks: expect 0% preservation
+    assert mc.preservation_rate == 0.0
+
+
 # --- MFJ tests ---------------------------------------------------------------
 
 def test_mfj_standard_deduction_only_conversion_is_zero_tax():

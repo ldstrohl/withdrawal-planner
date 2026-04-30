@@ -26,6 +26,7 @@ st.set_page_config(page_title="Withdrawal Planner", layout="wide", initial_sideb
 STRATEGY_DISPLAY = {
     "bridge_optimal": "Bridge optimal",
     "bridge_guarded": "Bridge guarded",
+    "bridge_responsive": "Bridge responsive",
     "minimal_convert": "Minimal convert",
     "aggressive_convert": "Aggressive convert",
     "custom": "Custom",
@@ -205,6 +206,7 @@ def render_sidebar() -> SimulationInputs:
     # Initialize session state defaults so widgets can use key= only (no value=)
     for k, v in _SIDEBAR_DEFAULTS.items():
         st.session_state.setdefault(f"scn_{k}", v)
+    st.session_state.setdefault("scn_optimization_target", "depletion")
 
     # G. Scenario save/load — top of sidebar
     with st.sidebar.expander("Scenario (save / load)", expanded=False):
@@ -401,6 +403,19 @@ def render_sidebar() -> SimulationInputs:
             "400% FPL. Use 'cliff' for conservative planning if you expect the IRA "
             "expansion to lapse."
         ),
+    )
+
+    st.sidebar.markdown("### Optimization target")
+    st.sidebar.radio(
+        "Optimization target",
+        options=["depletion", "preservation"],
+        format_func=lambda s: {"depletion": "Depletion (success rate)",
+                                "preservation": "Preservation (real value sustained)"}[s],
+        key="scn_optimization_target",
+        help="Depletion: % of paths that don't run out of money. "
+             "Preservation: % of paths whose ending real balance ≥ starting. "
+             "Use preservation for over-capitalized portfolios where success rate is "
+             "saturated near 100%.",
     )
 
     # G. Download button for scenario save
@@ -619,6 +634,7 @@ def strategies_view(base: SimulationInputs) -> None:
             mc_results[name] = cached_mc_historical(inputs=inp, start_year_floor=1928)
 
     mc_enabled = model_choice in ("lognormal", "historical")
+    optimization_target = st.session_state.get("scn_optimization_target", "depletion")
 
     # Lifetime summary table
     rows = []
@@ -637,9 +653,17 @@ def strategies_view(base: SimulationInputs) -> None:
         }
         if mc_enabled:
             mc = mc_results.get(name)
-            row["Success rate"] = f"{mc.success_rate:.0%}" if mc else "—"
+            if optimization_target == "preservation":
+                row["Preservation rate"] = f"{mc.preservation_rate:.0%}" if mc else "—"
+            else:
+                row["Success rate"] = f"{mc.success_rate:.0%}" if mc else "—"
         rows.append(row)
     st.markdown("##### Lifetime summary")
+    if mc_enabled:
+        if optimization_target == "preservation":
+            st.markdown("*Optimization target: **Preservation** (% of paths ending ≥ starting real balance)*")
+        else:
+            st.markdown("*Optimization target: **Depletion** (% of paths that don't run out of money)*")
     st.dataframe(rows, hide_index=True, use_container_width=True)
 
     # Comparison charts (suppressed when exactly 1 strategy)
@@ -662,20 +686,29 @@ def strategies_view(base: SimulationInputs) -> None:
 
     # MC-only outputs
     if mc_enabled and mc_results:
-        # Per-strategy success-rate callouts
+        # Per-strategy metric callouts
         for name, mc in mc_results.items():
             display = STRATEGY_DISPLAY.get(name, name)
-            if mc.success_rate < 0.80:
-                st.warning(
-                    f"**{display}**: success rate {mc.success_rate:.0%} is below 80% — "
-                    f"sequence-of-returns risk is meaningful. Consider lowering spend or extending the bridge."
-                )
-            elif mc.success_rate < 0.95:
-                st.info(
-                    f"**{display}**: success rate {mc.success_rate:.0%} — meaningful but not robust to severe sequences."
-                )
+            if optimization_target == "preservation":
+                rate = mc.preservation_rate
+                label = "Preservation rate"
+                low_msg = (f"**{display}**: {label} {rate:.0%} is below 80% — "
+                           f"most paths fail to sustain real portfolio value. Consider lower spend or a more conservative strategy.")
+                mid_msg = f"**{display}**: {label} {rate:.0%} — meaningful but not robust to severe sequences."
+                high_msg = f"**{display}**: {label} {rate:.0%} — robust to historical-style volatility."
             else:
-                st.success(f"**{display}**: success rate {mc.success_rate:.0%} — robust to historical-style volatility.")
+                rate = mc.success_rate
+                label = "Success rate"
+                low_msg = (f"**{display}**: {label} {rate:.0%} is below 80% — "
+                           f"sequence-of-returns risk is meaningful. Consider lowering spend or extending the bridge.")
+                mid_msg = f"**{display}**: {label} {rate:.0%} — meaningful but not robust to severe sequences."
+                high_msg = f"**{display}**: {label} {rate:.0%} — robust to historical-style volatility."
+            if rate < 0.80:
+                st.warning(low_msg)
+            elif rate < 0.95:
+                st.info(mid_msg)
+            else:
+                st.success(high_msg)
 
         # Per-strategy fan charts
         st.markdown("##### Monte Carlo fan charts")
@@ -848,6 +881,31 @@ remaining), the cap binds and conversion sizes drop, preserving the post-ladder 
 Post-60 the cap relaxes (no penalty risk). Best choice when robustness across
 sequence-of-returns scenarios matters more than maximum Roth stacking.
 
+#### `bridge_responsive` — scale by drawdown from peak
+Blends between **`minimal_convert`** (no drawdown) and **`bridge_optimal`** (≥20% drawdown
+from peak). Each year:
+
+```
+target = minimal_target + blend × (bracket_target − minimal_target)
+blend  = min(drawdown_from_peak / 0.20, 1.0)
+```
+
+**The rationale:** a converted dollar buys more future-recovery shares when prices are
+depressed than when the portfolio is at a peak. A 30% drawdown means the same tax bill
+converts ~43% more shares. Conversely, converting at an all-time high pre-pays tax on
+dollars that may subsequently fall — the same failure mode that makes `bridge_optimal`
+costly in historical crash sequences.
+
+Unlike `bridge_guarded`, there is no explicit Trad-reserve cap. Instead, the drawdown signal
+naturally suppresses conversion in flat or rising markets and amplifies it when prices are
+already down. The two strategies converge in bad sequences and diverge in good ones:
+`bridge_guarded` caps by Trad balance mechanics; `bridge_responsive` caps by absence of
+drawdown signal.
+
+**Best for:** over-capitalized portfolios where the goal is preserving real net worth
+rather than surviving a funding gap. If you don't need to spend down the portfolio,
+converting aggressively at peak prices is a tax-efficiency leak with no upside.
+
 #### `minimal_convert` — fill the standard deduction only
 Convert exactly `standard_deduction` (~$15.7k) every year. This is **always free**: the
 deduction wipes out the ordinary tax on it, and it's small enough not to push LTCG into
@@ -883,10 +941,15 @@ vs **success rate under stochastic / historical returns**:
 - `bridge_guarded` accepts a small reduction in deterministic upside in exchange for an
   explicit reserve cap that prevents the Trad-drain failure mode. Often the dominant choice
   on robustness-weighted portfolios.
+- `bridge_responsive` converts little during good runs and aggressively during drawdowns.
+  Often matches `bridge_optimal` on preservation rate with slightly higher median ending
+  balance; less protective than `bridge_guarded` in worst-case sequences. Best for
+  over-capitalized portfolios where the optimization target is preservation, not depletion.
 
 There is no single "right" answer. Pick `aggressive` for terminal wealth in good times,
-`bridge_guarded` or `minimal` for survival in bad sequences, `bridge_optimal` if you
-believe you'll experience close to long-run-mean returns.
+`bridge_guarded` or `minimal` for survival in bad sequences, `bridge_responsive` if you are
+over-capitalized and targeting real-value preservation, `bridge_optimal` if you believe
+returns will be close to the long-run mean.
 
 ---
 

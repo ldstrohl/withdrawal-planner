@@ -68,6 +68,7 @@ def _conversion_for_strategy(
     ltcg_estimate: float,
     params: TaxParams,
     custom_amount: Optional[float],
+    drawdown_from_peak: float = 0.0,
 ) -> float:
     if portfolio.traditional.balance <= 0:
         return 0.0
@@ -101,6 +102,17 @@ def _conversion_for_strategy(
             target = min(bracket_target, reserve_cap)
         else:
             target = bracket_target
+    elif name == "bridge_responsive":
+        # Linear blend between minimal_convert and bridge_optimal targets, weighted
+        # by drawdown from peak. No drawdown -> minimal (preserve Trad cushion +
+        # avoid tax-prepay on dollars that may crash). At >= 20% drawdown -> full
+        # bridge_optimal target.
+        ceil_ltcg = zero_ltcg_ceiling(ltcg_estimate, params)
+        ceil_aca = fpl_400_ceiling(params) - ltcg_estimate
+        bracket_target = max(min(ceil_ltcg, ceil_aca), params.standard_deduction)
+        minimal_target = params.standard_deduction
+        blend = min(drawdown_from_peak / 0.20, 1.0)
+        target = minimal_target + blend * (bracket_target - minimal_target)
     elif name == "custom":
         target = custom_amount or 0.0
     else:
@@ -201,6 +213,7 @@ def plan_year(
     filing_status: str = "single",
     max_iter: int = 40,
     tol: float = 1.0,
+    drawdown_from_peak: float = 0.0,
 ) -> PlanResult:
     """Solve the year's plan: how much to withdraw from each source and convert.
 
@@ -220,7 +233,8 @@ def plan_year(
             else 0.0
         )
         conversion = _conversion_for_strategy(
-            strategy_name, portfolio, age, ltcg_est, params, custom_conversion
+            strategy_name, portfolio, age, ltcg_est, params, custom_conversion,
+            drawdown_from_peak=drawdown_from_peak,
         )
 
         w, ltcg, shortfall = _fund_priority(portfolio, age, year, gross_need)
@@ -280,7 +294,7 @@ def plan_year(
 
 # --- preset registry --------------------------------------------------------
 
-STRATEGY_PRESETS = ["bridge_optimal", "bridge_guarded", "minimal_convert", "aggressive_convert", "custom"]
+STRATEGY_PRESETS = ["bridge_optimal", "bridge_guarded", "bridge_responsive", "minimal_convert", "aggressive_convert", "custom"]
 
 STRATEGY_DESCRIPTIONS = {
     "bridge_optimal": (
@@ -291,6 +305,11 @@ STRATEGY_DESCRIPTIONS = {
         "Like bridge_optimal but caps each year's conversion at trad_balance ÷ years_to_60, "
         "preventing the bracket target from draining Trad before the bridge ends. More "
         "robust under bad sequences; trades some Roth-stacking upside for ladder-gap insurance."
+    ),
+    "bridge_responsive": (
+        "Like bridge_optimal but scales conversion by drawdown from peak — minimal in good times "
+        "(preserves Trad cushion, avoids tax-prepay on dollars that may crash), full bracket-fill "
+        "at ≥20% drawdown (cheap conversion when prices are depressed). Targets preservation, not depletion."
     ),
     "minimal_convert": (
         "Convert only enough Trad→Roth to fill the standard deduction (~$15.7k)."
