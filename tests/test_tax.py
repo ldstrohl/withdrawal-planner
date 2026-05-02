@@ -607,3 +607,258 @@ def test_mfj_medicare_oop_roughly_double_single_at_age_66():
     # Both should be in tier 0 (low MAGI), so MFJ should be ~2x single base.
     assert r_mfj.plan.healthcare_oop > 1.8 * r_single.plan.healthcare_oop
     assert r_mfj.plan.healthcare_oop < 2.2 * r_single.plan.healthcare_oop
+
+
+# --- accumulation phase tests ------------------------------------------------
+
+def test_no_accumulation_unchanged():
+    """With current_age=None and retirement_age=None, behavior is identical to legacy."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.returns import ConstantReturns
+    base_kwargs = dict(
+        initial_cash=25_000, initial_taxable=200_000, taxable_basis=150_000,
+        initial_traditional=100_000, initial_roth=50_000, initial_hsa=10_000,
+        target_spend=50_000, start_age=45, horizon_years=5,
+        strategy="minimal_convert",
+    )
+    legacy = simulate(SimulationInputs(**base_kwargs), returns_model=ConstantReturns(0, 0, 0))
+    explicit_none = simulate(
+        SimulationInputs(**base_kwargs, current_age=None, retirement_age=None),
+        returns_model=ConstantReturns(0, 0, 0),
+    )
+    assert len(legacy) == len(explicit_none)
+    assert legacy[-1].ending_total == explicit_none[-1].ending_total
+    assert summarize(legacy)["total_shortfall"] == summarize(explicit_none)["total_shortfall"]
+
+
+def test_pure_accumulation_growth():
+    """10 accumulation years with 7% real returns and $50k/yr to traditional."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=45, start_age=45, horizon_years=10,
+        annual_savings=50_000.0,
+        savings_allocation=(("traditional", 1.0),),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=0,
+        stock_return=0.07, bond_return=0.07, cash_return=0.07,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(stocks=0.07, bonds=0.07, cash=0.07))
+    assert len(r) == 10
+    # FV of ordinary annuity: 50000 * ((1.07^10 - 1) / 0.07) = 690_822.40
+    expected = 50_000 * ((1.07 ** 10 - 1) / 0.07)
+    assert abs(r[9].snapshot["traditional"] - expected) < 1.0, r[9].snapshot["traditional"]
+    for yr in r:
+        assert yr.plan.phase == "accumulation"
+        assert yr.withdrawal_rate == 0
+
+
+def test_allocation_routes_correctly():
+    """Savings split 60/40 traditional/roth lands in the right account buckets."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=36, start_age=36, horizon_years=1,
+        annual_savings=10_000.0,
+        savings_allocation=(("traditional", 0.6), ("roth", 0.4)),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=0,
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    assert len(r) == 1
+    snap = r[0].snapshot
+    assert abs(snap["traditional"] - 6_000) < 1e-6
+    assert abs(snap["roth_contributions"] - 4_000) < 1e-6
+    assert abs(snap["roth"] - 4_000) < 1e-6
+    assert snap["cash"] == 0.0
+    assert snap["taxable"] == 0.0
+    assert snap["hsa"] == 0.0
+
+
+def test_employer_match_routes_to_traditional():
+    """Employer match always lands in traditional regardless of savings_allocation."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=36, start_age=36, horizon_years=1,
+        annual_savings=10_000.0,
+        accumulation_wage_income=100_000.0,
+        employer_match_pct=0.05,
+        employer_match_cap_pct=0.0,
+        savings_allocation=(("roth", 1.0),),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=0,
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    snap = r[0].snapshot
+    assert abs(snap["traditional"] - 5_000) < 1e-6, snap["traditional"]
+    assert abs(snap["roth_contributions"] - 10_000) < 1e-6, snap["roth_contributions"]
+
+
+def test_employer_match_cap_applies():
+    """employer_match_cap_pct limits the match even if employer_match_pct is higher."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=36, start_age=36, horizon_years=1,
+        annual_savings=10_000.0,
+        accumulation_wage_income=100_000.0,
+        employer_match_pct=0.10,
+        employer_match_cap_pct=0.05,
+        savings_allocation=(("roth", 1.0),),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=0,
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    snap = r[0].snapshot
+    # Raw match = 10k, capped to 5k (5% of 100k)
+    assert abs(snap["traditional"] - 5_000) < 1e-6, snap["traditional"]
+
+
+def test_roth_contributions_during_accumulation_withdrawable_in_retirement():
+    """Roth contributions built up during accumulation can be drawn in retirement."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    # 5 accumulation years + 1 retirement year
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=40, start_age=40, horizon_years=6,
+        annual_savings=5_000.0,
+        savings_allocation=(("roth", 1.0),),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=20_000,
+        strategy="minimal_convert",
+        ss_annual_benefit=0,
+        filing_status="single",
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+        state_code="NONE",
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    # After year 4 (index 4, last accumulation year, age 39): roth.contributions = 25k
+    assert abs(r[4].snapshot["roth_contributions"] - 25_000) < 1e-6, r[4].snapshot["roth_contributions"]
+    assert r[4].plan.phase == "accumulation"
+    # Year 5 (index 5, first retirement year, age 40)
+    assert r[5].plan.phase == "retirement"
+    assert r[5].plan.withdrawals.roth_contributions > 0
+    assert r[5].snapshot["roth_contributions"] < 25_000
+
+
+def test_one_time_shock_drains_cash_then_taxable_with_ltcg():
+    """Large one-time expense drains cash then performs LTCG-grossed-up taxable sale."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.streams import ExpenseStream
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=45, start_age=45, horizon_years=10,
+        initial_cash=50_000, initial_taxable=300_000, taxable_basis=150_000,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        accumulation_wage_income=150_000.0,
+        filing_status="single",
+        state_code="NONE",
+        expense_streams=(ExpenseStream(name="house", annual_amount=200_000.0, start_age=40, end_age=40),),
+        annual_savings=0, savings_allocation=(),
+        target_spend=0,
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    # Year 5 = age 40 (current_age=35, so year index 5 = age 40)
+    yr = r[5]
+    assert yr.age == 40
+    assert yr.plan.phase == "accumulation"
+    # cash should be ~0
+    assert abs(yr.snapshot["cash"]) < 1
+    # taxable remaining: 300k - 162162.16 ~= 137837.84
+    assert abs(yr.snapshot["taxable"] - 137_837.84) < 2.0, yr.snapshot["taxable"]
+    # federal LTCG tax: 81081.08 * 0.15 ~= 12162.16
+    assert abs(yr.plan.federal_tax - 12_162.16) < 2.0, yr.plan.federal_tax
+    assert yr.plan.shortfall < 1.0, yr.plan.shortfall  # sub-tolerance residual from gross-up convergence
+    assert yr.plan.phase == "accumulation"
+
+
+def test_one_time_shock_exhausts_taxable_records_shortfall():
+    """When taxable is too small to cover the expense, shortfall is recorded."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.streams import ExpenseStream
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=45, start_age=45, horizon_years=10,
+        initial_cash=50_000, initial_taxable=50_000, taxable_basis=25_000,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        accumulation_wage_income=150_000.0,
+        filing_status="single",
+        state_code="NONE",
+        expense_streams=(ExpenseStream(name="house", annual_amount=200_000.0, start_age=40, end_age=40),),
+        annual_savings=0, savings_allocation=(),
+        target_spend=0,
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    yr = r[5]
+    assert yr.age == 40
+    assert yr.snapshot["cash"] < 1
+    assert yr.snapshot["taxable"] < 1
+    # shortfall = 150k - (50k - 3750) = 150k - 46250 = 103750
+    assert abs(yr.plan.shortfall - 103_750) < 5.0, yr.plan.shortfall
+    assert summarize(r)["total_shortfall"] >= 103_745
+
+
+def test_recurring_tuition_within_savings_rate():
+    """Expense stream reduces the net deposit each year; surplus accumulates in taxable."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.streams import ExpenseStream
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=39, start_age=39, horizon_years=4,
+        annual_savings=60_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=0,
+        expense_streams=(ExpenseStream(name="tuition", annual_amount=40_000.0, start_age=35, end_age=38),),
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+        state_code="NONE",
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    assert len(r) == 4
+    # Each year: net = 60k - 40k = 20k deposited at-cost to taxable -> after 4 yrs: 80k
+    assert abs(r[3].snapshot["taxable"] - 80_000) < 1.0, r[3].snapshot["taxable"]
+    assert abs(r[3].snapshot["taxable_basis"] - 80_000) < 1.0, r[3].snapshot["taxable_basis"]
+    assert summarize(r)["total_shortfall"] == 0
+
+
+def test_mortgage_stream_crosses_retirement_boundary():
+    """Expense stream active across the accumulation/retirement boundary is honored in both phases."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.streams import ExpenseStream
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=40, retirement_age=45, start_age=45, horizon_years=10,
+        annual_savings=50_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        initial_cash=200_000, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=40_000,
+        expense_streams=(ExpenseStream(name="mortgage", annual_amount=24_000.0, start_age=40, end_age=49),),
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single",
+        state_code="NONE",
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    assert len(r) == 10
+    # Years 0-4 are accumulation (ages 40-44)
+    for i in range(5):
+        assert r[i].plan.phase == "accumulation", f"Expected accumulation at index {i}, got {r[i].plan.phase}"
+        assert r[i].plan.scheduled_expense == 24_000, f"Expected 24k expense at index {i}"
+    # Years 5-9 are retirement (ages 45-49)
+    for i in range(5, 10):
+        assert r[i].plan.phase == "retirement", f"Expected retirement at index {i}, got {r[i].plan.phase}"
+        assert r[i].plan.scheduled_expense == 24_000, f"Expected 24k expense at index {i}"

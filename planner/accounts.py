@@ -7,7 +7,7 @@ All values are real dollars. Growth is real return. Per-account asset allocation
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from .returns import YearReturns, blended_return
 
@@ -24,6 +24,9 @@ class Cash:
         self.balance -= take
         return take
 
+    def deposit(self, amount: float) -> None:
+        self.balance += max(amount, 0.0)
+
 
 @dataclass
 class Taxable:
@@ -39,6 +42,11 @@ class Taxable:
             return 0.0
         gain = max(self.balance - self.basis, 0.0)
         return gain / self.balance
+
+    def deposit(self, amount: float) -> None:
+        amount = max(amount, 0.0)
+        self.balance += amount
+        self.basis += amount
 
     def sell(self, amount: float) -> Tuple[float, float]:
         """Sell `amount` of market value pro-rata between basis and gain.
@@ -68,6 +76,9 @@ class TraditionalIRA:
         take = min(self.balance, max(amount, 0.0))
         self.balance -= take
         return take
+
+    def deposit(self, amount: float) -> None:
+        self.balance += max(amount, 0.0)
 
 
 @dataclass
@@ -137,6 +148,9 @@ class RothIRA:
             self.rungs = [r for r in self.rungs if r.amount > 1e-6]
         return taken
 
+    def add_contribution(self, amount: float) -> None:
+        self.contributions += max(amount, 0.0)
+
     def withdraw_contributions(self, amount: float) -> float:
         take = min(self.contributions, max(amount, 0.0))
         self.contributions -= take
@@ -187,6 +201,9 @@ class HSA:
         self.balance -= take
         return take
 
+    def deposit(self, amount: float) -> None:
+        self.balance += max(amount, 0.0)
+
 
 @dataclass
 class Portfolio:
@@ -218,6 +235,35 @@ class Portfolio:
             + self.roth.balance
             + self.hsa.balance
         )
+
+    def contribute(self, allocation: Dict[str, float], total: float) -> None:
+        total = max(total, 0.0)
+        if total <= 0:
+            return
+        fracs = {k: max(v, 0.0) for k, v in allocation.items()}
+        frac_sum = sum(fracs.values())
+        if frac_sum > 1.0:
+            fracs = {k: v / frac_sum for k, v in fracs.items()}
+            frac_sum = 1.0
+        leftover = 1.0 - frac_sum
+        cash_frac = fracs.get("cash", 0.0) + leftover
+        amounts = {
+            "cash": cash_frac,
+            "taxable": fracs.get("taxable", 0.0),
+            "traditional": fracs.get("traditional", 0.0),
+            "roth": fracs.get("roth", 0.0),
+            "hsa": fracs.get("hsa", 0.0),
+        }
+        if amounts["cash"] > 0:
+            self.cash.deposit(amounts["cash"] * total)
+        if amounts["taxable"] > 0:
+            self.taxable.deposit(amounts["taxable"] * total)
+        if amounts["traditional"] > 0:
+            self.traditional.deposit(amounts["traditional"] * total)
+        if amounts["roth"] > 0:
+            self.roth.add_contribution(amounts["roth"] * total)
+        if amounts["hsa"] > 0:
+            self.hsa.deposit(amounts["hsa"] * total)
 
     def snapshot(self) -> dict:
         return {

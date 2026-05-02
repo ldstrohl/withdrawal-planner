@@ -41,6 +41,23 @@ loader will prefer it. Otherwise, use the in-app sidebar to import/export JSON.
 - `scenarios/default.json` — generic median-FIRE persona startup scenario
 - `tests/test_tax.py` — pinned tax-engine, strategy, and streams math
 
+## Accumulation
+
+Model pre-retirement saving and one-time or recurring expense shocks before the
+retirement phase begins.
+
+Inputs: `current_age`, `retirement_age`, `annual_savings`, `savings_allocation`,
+`employer_match_pct`, `employer_match_cap_pct`, `accumulation_wage_income`.
+
+Savings are entered as **net dollars** (after income tax and FICA); `accumulation_wage_income`
+is used only as the LTCG stacking baseline when a taxable sale is forced by an expense shock —
+not for full payroll modeling.
+
+Expense overflow order: contribution pool → cash → taxable brokerage (with LTCG gross-up).
+If cash and taxable are exhausted, the year is recorded as a shortfall.
+See the "How it works" tab for the detailed per-year logic, and `ROADMAP.md` for deferred
+features (full payroll mode, tax-advantaged depletion ordering, contribution limits).
+
 ## Strategies
 
 - `bridge_optimal` — convert Trad→Roth up to lesser of (0% LTCG ceiling, 400% FPL ceiling), floor at standard deduction

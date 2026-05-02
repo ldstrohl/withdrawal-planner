@@ -26,5 +26,11 @@
   "state_ltcg_threshold": 0.0,
   "spend_mode": "fixed",
   "spend_rate": 0.035,
-  "filing_status": "single"
+  "filing_status": "single",
+  "current_age": 42,
+  "annual_savings": 0,
+  "savings_allocation": [],
+  "employer_match_pct": 0.0,
+  "employer_match_cap_pct": 0.0,
+  "accumulation_wage_income": 0
 }

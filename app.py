@@ -64,6 +64,16 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
     "state_ltcg_threshold": 0.0,
     "spend_mode": "fixed",
     "spend_rate": 0.035,
+    "current_age": 35,
+    "annual_savings": 0,
+    "savings_allocation_cash_pct": 0,
+    "savings_allocation_taxable_pct": 0,
+    "savings_allocation_traditional_pct": 0,
+    "savings_allocation_roth_pct": 0,
+    "savings_allocation_hsa_pct": 0,
+    "employer_match_pct": 0.0,
+    "employer_match_cap_pct": 0.0,
+    "accumulation_wage_income": 0,
 }
 
 
@@ -80,9 +90,18 @@ def _load_default_scenario() -> dict:
     # Coerce numeric types stored as floats back to ints where the widget expects ints.
     for k in ("initial_cash", "initial_taxable", "taxable_basis", "initial_traditional",
               "initial_roth", "roth_contributions", "initial_hsa", "target_spend",
-              "start_age", "horizon_years", "ss_annual_benefit", "ss_claim_age"):
+              "start_age", "horizon_years", "ss_annual_benefit", "ss_claim_age",
+              "current_age", "annual_savings", "accumulation_wage_income"):
         if k in loaded:
             loaded[k] = int(loaded[k])
+    # Convert savings_allocation list-of-pairs to per-account pct keys for sidebar widgets.
+    if "savings_allocation" in loaded:
+        alloc_map = {name: frac for name, frac in (loaded.pop("savings_allocation") or [])}
+        loaded["savings_allocation_cash_pct"] = int(round(alloc_map.get("cash", 0.0) * 100))
+        loaded["savings_allocation_taxable_pct"] = int(round(alloc_map.get("taxable", 0.0) * 100))
+        loaded["savings_allocation_traditional_pct"] = int(round(alloc_map.get("traditional", 0.0) * 100))
+        loaded["savings_allocation_roth_pct"] = int(round(alloc_map.get("roth", 0.0) * 100))
+        loaded["savings_allocation_hsa_pct"] = int(round(alloc_map.get("hsa", 0.0) * 100))
     return {**_SIDEBAR_FALLBACK_DEFAULTS, **loaded}
 
 
@@ -285,6 +304,57 @@ def render_sidebar() -> SimulationInputs:
     start_age = st.sidebar.number_input("Retirement age", step=1, key="scn_start_age")
     horizon = st.sidebar.number_input("Years to simulate", step=1, key="scn_horizon_years")
 
+    # Accumulation phase inputs
+    with st.sidebar.expander("Accumulation", expanded=False):
+        current_age = st.number_input(
+            "Current age", min_value=18, max_value=80,
+            key="scn_current_age",
+            help="Your age today. Set equal to retirement age to skip the accumulation phase.",
+        )
+        annual_savings = st.number_input(
+            "Annual savings (real $)", min_value=0, step=1_000,
+            key="scn_annual_savings",
+        )
+        st.caption("Allocate savings across accounts (%):")
+        _alloc_cols = st.columns(5)
+        with _alloc_cols[0]:
+            alloc_cash_pct = st.number_input("Cash", min_value=0, max_value=100, step=1,
+                                             key="scn_savings_allocation_cash_pct")
+        with _alloc_cols[1]:
+            alloc_taxable_pct = st.number_input("Taxable", min_value=0, max_value=100, step=1,
+                                                key="scn_savings_allocation_taxable_pct")
+        with _alloc_cols[2]:
+            alloc_trad_pct = st.number_input("Trad", min_value=0, max_value=100, step=1,
+                                             key="scn_savings_allocation_traditional_pct")
+        with _alloc_cols[3]:
+            alloc_roth_pct = st.number_input("Roth", min_value=0, max_value=100, step=1,
+                                             key="scn_savings_allocation_roth_pct")
+        with _alloc_cols[4]:
+            alloc_hsa_pct = st.number_input("HSA", min_value=0, max_value=100, step=1,
+                                            key="scn_savings_allocation_hsa_pct")
+        _alloc_total = alloc_cash_pct + alloc_taxable_pct + alloc_trad_pct + alloc_roth_pct + alloc_hsa_pct
+        if _alloc_total > 100:
+            st.caption(f"Allocation sum: {_alloc_total}% ⚠️ exceeds 100 (engine normalizes excess to cash)")
+        else:
+            st.caption(f"Allocation sum: {_alloc_total}%")
+        employer_match_pct_ui = st.number_input(
+            "Employer match (% of wages)", min_value=0.0, max_value=50.0, step=0.1,
+            value=float(st.session_state.get("scn_employer_match_pct", 0.0)) * 100,
+            key="scn_employer_match_pct_ui",
+            help="Employer contribution as a percent of your wage income.",
+        )
+        employer_match_cap_pct_ui = st.number_input(
+            "Employer match cap (% of wages)", min_value=0.0, max_value=50.0, step=0.1,
+            value=float(st.session_state.get("scn_employer_match_cap_pct", 0.0)) * 100,
+            key="scn_employer_match_cap_pct_ui",
+            help="Max wages matched. 0 = uncapped.",
+        )
+        st.caption("0 = uncapped match")
+        accumulation_wage_income = st.number_input(
+            "Accumulation wage income (real $)", min_value=0, step=1_000,
+            key="scn_accumulation_wage_income",
+        )
+
     # A. Collapse "Social Security"
     with st.sidebar.expander("Social Security", expanded=False):
         ss_benefit = st.number_input(
@@ -418,6 +488,21 @@ def render_sidebar() -> SimulationInputs:
              "saturated near 100%.",
     )
 
+    # Build savings_allocation tuple from the five pct inputs.
+    _retirement_age = int(start_age)
+    _current_age = int(current_age)
+    _savings_alloc = tuple(
+        (name, pct / 100)
+        for name, pct in [
+            ("cash", alloc_cash_pct),
+            ("taxable", alloc_taxable_pct),
+            ("traditional", alloc_trad_pct),
+            ("roth", alloc_roth_pct),
+            ("hsa", alloc_hsa_pct),
+        ]
+        if pct > 0
+    )
+
     # G. Download button for scenario save
     built_inputs = SimulationInputs(
         initial_cash=float(cash),
@@ -432,7 +517,7 @@ def render_sidebar() -> SimulationInputs:
         bond_return=float(bond_return),
         cash_return=float(cash_return),
         stock_allocation=float(stock_alloc),
-        start_age=int(start_age),
+        start_age=_retirement_age,
         horizon_years=int(horizon),
         aca_mode=aca_mode,
         filing_status=filing_status,
@@ -446,8 +531,19 @@ def render_sidebar() -> SimulationInputs:
         state_ltcg_threshold=state_cg_threshold,
         spend_mode=spend_mode,
         spend_rate=float(spend_rate),
+        current_age=_current_age,
+        retirement_age=_retirement_age,
+        annual_savings=float(annual_savings),
+        savings_allocation=_savings_alloc,
+        employer_match_pct=employer_match_pct_ui / 100,
+        employer_match_cap_pct=employer_match_cap_pct_ui / 100,
+        accumulation_wage_income=float(accumulation_wage_income),
     )
+    # Build a JSON-serializable dict; savings_allocation becomes a list of [name, fraction] pairs.
     inputs_dict = {k: v for k, v in _dc.asdict(built_inputs).items() if k != "params"}
+    inputs_dict["savings_allocation"] = [
+        [name, frac] for name, frac in built_inputs.savings_allocation if frac > 0
+    ]
     st.sidebar.download_button(
         "Save scenario JSON",
         data=_json.dumps(inputs_dict, indent=2),
@@ -835,6 +931,34 @@ that can't be touched until 59.5 without a 10% penalty. The puzzle:
 
 These three goals fight each other in low-bracket years. The strategies below pick
 different points on that tradeoff frontier.
+
+---
+
+### Accumulation phase
+
+When `current_age < retirement_age`, the engine runs an **accumulation branch** for each
+intervening year before switching to the full retirement loop. If the two ages are equal
+(the default), no accumulation years run and behavior is identical to the original
+retirement-only model.
+
+**Per-year accumulation order:**
+1. Real growth is applied to all accounts first.
+2. `annual_savings + active income streams + employer match` forms the **contribution pool**. Employer match is capped at `employer_match_cap_pct` of wages when non-zero. Pool minus active expense streams is allocated across accounts per `savings_allocation`. **Employer match always lands in Traditional.**
+3. If expense streams exceed the pool, the shortfall draws from **cash first**, then **taxable brokerage** (with LTCG gross-up). Tax-advantaged depletion (Roth, Traditional with penalty) is intentionally out of scope — if cash and taxable are exhausted, the year is flagged as a shortfall and the user should revisit their inputs. See `ROADMAP.md` for planned improvements.
+
+**Simple-tax contract:** savings are entered as **net dollars** — the user has already
+accounted for income tax and payroll in `annual_savings`. The engine does not model FICA
+or income tax on wages during accumulation. Contributions flow directly into accounts
+without a tax deduction pass.
+
+**Why the model still asks for `accumulation_wage_income`:** when an expense shock forces
+a taxable sale, the realized LTCG stacks on top of wages for federal bracket purposes.
+Without wages, LTCG would always fall in the 0% bracket and the simulation would silently
+undertax shocks. State LTCG uses the existing flat-rate model unchanged.
+
+**Concrete example:** a $200k house down-payment at age 40, against $50k cash + $300k
+taxable (50% gain ratio) at $150k wages, will sell ≈ $162k of taxable, realize ~$81k
+LTCG on top of wages, and pay ~$12k federal LTCG tax to net the required amount.
 
 ---
 
