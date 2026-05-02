@@ -56,6 +56,8 @@ class PlanResult:
     scheduled_income: float = 0.0
     scheduled_taxable_income: float = 0.0
     scheduled_expense: float = 0.0
+    phase: str = "retirement"   # "accumulation" | "retirement"
+    contribution: float = 0.0   # net deposits made this year (accumulation only)
 
 
 # --- conversion sizing ------------------------------------------------------

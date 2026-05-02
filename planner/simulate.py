@@ -12,14 +12,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .accounts import Cash, HSA, Portfolio, RothIRA, Taxable, TraditionalIRA
 from .returns import ConstantReturns, ReturnsModel
-from .state_tax import resolve_state_params
-from .strategy import PlanResult, plan_year
+from .state_tax import StateTaxParams, resolve_state_params, state_tax
+from .strategy import PlanResult, Withdrawals, plan_year
 from .streams import ExpenseStream, IncomeStream, active_expense, active_income
-from .tax import TAX_PARAMS_2026, TaxParams, required_min_distribution, tax_params_for
+from .tax import TAX_PARAMS_2026, TaxParams, federal_tax, required_min_distribution, tax_params_for
 
 
 @dataclass
@@ -67,6 +67,13 @@ class SimulationInputs:
     state_ltcg_threshold: float = 0.0
     spend_mode: str = "fixed"     # "fixed" (uses target_spend) | "swr" (rate × starting NW)
     spend_rate: float = 0.035     # used only when spend_mode == "swr"
+    current_age: Optional[int] = None         # when None, treated as start_age (no accumulation phase)
+    retirement_age: Optional[int] = None      # when None, treated as start_age
+    annual_savings: float = 0.0
+    savings_allocation: tuple = ()            # tuple of (account_name, fraction) pairs
+    employer_match_pct: float = 0.0
+    employer_match_cap_pct: float = 0.0       # 0 means uncapped match
+    accumulation_wage_income: float = 0.0
 
 
 def build_portfolio(inputs: SimulationInputs) -> Portfolio:
@@ -113,6 +120,136 @@ def _apply_action(portfolio: Portfolio, plan: PlanResult, year: int) -> None:
         portfolio.roth.add_conversion(year=year, amount=actually_converted)
 
 
+def _force_taxable_sale(
+    taxable: Taxable,
+    net_need: float,
+    wage_income: float,
+    tax_params: TaxParams,
+    state_params: StateTaxParams,
+) -> Tuple[float, float, float, float, float]:
+    """Sell from Taxable, grossing up to cover the LTCG tax it generates.
+
+    Returns (proceeds, ltcg_realized, federal_ltcg_tax, state_ltcg_tax, unmet).
+
+    LTCG stacks on `wage_income` for federal bracket purposes (no other ordinary
+    income during accumulation under simple-tax mode). State LTCG uses the
+    flat-rate model with no ordinary-income interaction.
+    """
+    if net_need <= 0 or taxable.balance <= 0:
+        return 0.0, 0.0, 0.0, 0.0, max(net_need, 0.0)
+    gain_ratio = taxable.gain_ratio
+    gross = net_need
+    for _ in range(20):
+        sale = min(gross, taxable.balance)
+        gain = sale * gain_ratio
+        f_tax = federal_tax(wage_income, gain, tax_params)["ltcg"]
+        s_tax = state_tax(0.0, gain, state_params)
+        net_after_tax = sale - f_tax - s_tax
+        if abs(net_after_tax - net_need) < 0.5 or sale >= taxable.balance:
+            break
+        gross = net_need + f_tax + s_tax
+    sale = min(gross, taxable.balance)
+    proceeds, ltcg = taxable.sell(sale)
+    f_tax = federal_tax(wage_income, ltcg, tax_params)["ltcg"]
+    s_tax = state_tax(0.0, ltcg, state_params)
+    net_after_tax = proceeds - f_tax - s_tax
+    unmet = max(net_need - net_after_tax, 0.0)
+    return proceeds, ltcg, f_tax, s_tax, unmet
+
+
+def _run_accumulation_year(
+    portfolio: Portfolio,
+    age: int,
+    year_index: int,
+    returns_model: ReturnsModel,
+    path_index: int,
+    inputs: "SimulationInputs",
+    tax_params: TaxParams,
+    state_params: StateTaxParams,
+    results: List[YearResult],
+    effective_spend: float,
+) -> None:
+    starting_total = portfolio.total
+    year_returns = returns_model.get(year_index=year_index, path_index=path_index)
+    portfolio.apply_growth(year_returns)
+
+    wages = inputs.accumulation_wage_income
+    match_raw = wages * inputs.employer_match_pct
+    if inputs.employer_match_cap_pct > 0:
+        match = min(match_raw, wages * inputs.employer_match_cap_pct)
+    else:
+        match = match_raw
+
+    sched_income, _sched_taxable = active_income(inputs.income_streams, age)
+    sched_expense = active_expense(inputs.expense_streams, age)
+    pool = inputs.annual_savings + sched_income + match
+
+    allocation_dict = dict(inputs.savings_allocation)
+
+    net = pool - sched_expense
+    ltcg_realized = 0.0
+    ltcg_tax_federal = 0.0
+    ltcg_tax_state = 0.0
+    unmet = 0.0
+    if net >= 0:
+        if match > 0:
+            portfolio.traditional.deposit(match)
+        remainder = max(net - match, 0.0)
+        if remainder > 0:
+            portfolio.contribute(allocation_dict, remainder)
+        contribution = max(net, 0.0)
+    else:
+        if match > 0:
+            portfolio.traditional.deposit(match)
+        shortfall_remaining = -net
+        cash_take = portfolio.cash.withdraw(shortfall_remaining)
+        shortfall_remaining -= cash_take
+        if shortfall_remaining > 0:
+            _proceeds, ltcg_realized, ltcg_tax_federal, ltcg_tax_state, unmet = _force_taxable_sale(
+                portfolio.taxable,
+                shortfall_remaining,
+                wages,
+                tax_params,
+                state_params,
+            )
+        contribution = match
+
+    plan = PlanResult(
+        withdrawals=Withdrawals(),
+        ltcg=ltcg_realized,
+        conversion=0.0,
+        ordinary_income=0.0,
+        federal_tax=ltcg_tax_federal,
+        penalty=0.0,
+        healthcare_oop=0.0,
+        magi=0.0,
+        target_net=0.0,
+        funded=0.0,
+        shortfall=unmet,
+        state_tax=ltcg_tax_state,
+        gross_used=0.0,
+        scheduled_income=sched_income,
+        scheduled_taxable_income=0.0,
+        scheduled_expense=sched_expense,
+        phase="accumulation",
+        contribution=contribution,
+    )
+
+    ending_total = portfolio.total
+    results.append(
+        YearResult(
+            year=year_index,
+            age=age,
+            starting_total=starting_total,
+            ending_total=ending_total,
+            plan=plan,
+            snapshot=portfolio.snapshot(),
+            target_net=0.0,
+            withdrawal_rate=0.0,
+        )
+    )
+
+
 def simulate(
     inputs: SimulationInputs,
     returns_model: Optional[ReturnsModel] = None,
@@ -147,9 +284,28 @@ def simulate(
     else:
         effective_spend = inputs.target_spend
 
+    current_age = inputs.current_age if inputs.current_age is not None else inputs.start_age
+    retirement_age = inputs.retirement_age if inputs.retirement_age is not None else inputs.start_age
+
     peak_total = portfolio.total
     for y in range(inputs.horizon_years):
-        age = inputs.start_age + y
+        age = current_age + y
+
+        if age < retirement_age:
+            _run_accumulation_year(
+                portfolio=portfolio,
+                age=age,
+                year_index=y,
+                returns_model=returns_model,
+                path_index=path_index,
+                inputs=inputs,
+                tax_params=tax_params,
+                state_params=state_params,
+                results=results,
+                effective_spend=effective_spend,
+            )
+            peak_total = max(peak_total, portfolio.total)
+            continue
 
         # 1. Capture beginning-of-year balance (pre-growth) for SWR-conventional WR denominator.
         starting_total = portfolio.total

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import plotly.graph_objects as go
 
 from planner.simulate import YearResult
+
+
+def _retirement_age(results: List[YearResult]) -> Optional[int]:
+    """Return the age at which retirement begins, or None if no accumulation phase."""
+    for r in results:
+        if r.plan.phase == "retirement":
+            return r.age
+    return None
 
 
 PALETTE = {
@@ -92,6 +100,10 @@ def balance_stack(results: List[YearResult]) -> go.Figure:
             yaxis=dict(title="Balance", tickformat="$,.0f"),
         )
     )
+    ret_age = _retirement_age(results)
+    if ret_age is not None:
+        fig.add_vline(x=ret_age, line_width=1, line_dash="dash", line_color="#9CA3AF",
+                      annotation_text="Retirement", annotation_position="top right")
     return fig
 
 
@@ -118,6 +130,10 @@ def cashflow_bars(results: List[YearResult]) -> go.Figure:
         ),
         barmode="stack",
     )
+    ret_age = _retirement_age(results)
+    if ret_age is not None:
+        fig.add_vline(x=ret_age, line_width=1, line_dash="dash", line_color="#9CA3AF",
+                      annotation_text="Retirement", annotation_position="top right")
     return fig
 
 
@@ -143,6 +159,10 @@ def scheduled_streams_bars(results: List[YearResult]) -> go.Figure:
         ),
         barmode="relative",
     )
+    ret_age = _retirement_age(results)
+    if ret_age is not None:
+        fig.add_vline(x=ret_age, line_width=1, line_dash="dash", line_color="#9CA3AF",
+                      annotation_text="Retirement", annotation_position="top right")
     return fig
 
 
@@ -160,6 +180,10 @@ def conversions_bars(results: List[YearResult]) -> go.Figure:
             yaxis=dict(title="Conversion amount", tickformat="$,.0f"),
         )
     )
+    ret_age = _retirement_age(results)
+    if ret_age is not None:
+        fig.add_vline(x=ret_age, line_width=1, line_dash="dash", line_color="#9CA3AF",
+                      annotation_text="Retirement", annotation_position="top right")
     return fig
 
 
@@ -184,13 +208,18 @@ def tax_breakdown(results: List[YearResult]) -> go.Figure:
         ),
         barmode="stack",
     )
+    ret_age = _retirement_age(results)
+    if ret_age is not None:
+        fig.add_vline(x=ret_age, line_width=1, line_dash="dash", line_color="#9CA3AF",
+                      annotation_text="Retirement", annotation_position="top right")
     return fig
 
 
 def withdrawal_rate(results: List[YearResult]) -> go.Figure:
     """Line: gross withdrawal / beginning-of-year portfolio, with safe-rate band."""
-    ages = _ages(results)
-    rates = [r.withdrawal_rate * 100 for r in results]
+    retirement = [r for r in results if r.plan.phase == "retirement"]
+    ages = [r.age for r in retirement]
+    rates = [r.withdrawal_rate * 100 for r in retirement]
     fig = go.Figure()
     # Safe-rate band drawn as two scatters with fill='tonexty' (cheaper than add_hrect).
     band_low = [3.25] * len(ages)
@@ -217,6 +246,9 @@ def withdrawal_rate(results: List[YearResult]) -> go.Figure:
             yaxis=dict(title="% of beginning-of-year portfolio", ticksuffix="%"),
         )
     )
+    if len(retirement) < len(results) and retirement:
+        fig.add_vline(x=retirement[0].age, line_width=1, line_dash="dash", line_color="#9CA3AF",
+                      annotation_text="Retirement", annotation_position="top right")
     return fig
 
 
@@ -333,7 +365,9 @@ def per_year_table(results: List[YearResult]) -> pd.DataFrame:
         rows.append({
             "Year": r.year,
             "Age": r.age,
+            "Phase": p.phase,
             "Total $": round(r.ending_total),
+            "Contribution": f"${round(p.contribution):,}",
             "Cash": round(s["cash"]),
             "Taxable": round(s["taxable"]),
             "Trad 401k": round(s["traditional"]),
