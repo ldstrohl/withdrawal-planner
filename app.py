@@ -512,9 +512,16 @@ def render_sidebar() -> SimulationInputs:
                 key="scn_retirement_target_nw",
                 help="Retire when real portfolio value reaches this amount (subject to floor and ceiling).",
             )
-            if st.button("Set target = spend × 25", help="Standard FI heuristic: 25× annual spend covers ~4% SWR indefinitely."):
-                st.session_state["scn_retirement_target_nw"] = int(float(target) * 25)
-                st.rerun()
+
+            def _set_target_from_spend() -> None:
+                spend = st.session_state.get("scn_target_spend", 0)
+                st.session_state["scn_retirement_target_nw"] = int(float(spend) * 25)
+
+            st.button(
+                "Set target = spend × 25",
+                on_click=_set_target_from_spend,
+                help="Standard FI heuristic: 25× annual spend covers ~4% SWR indefinitely.",
+            )
             use_floor = st.checkbox(
                 "Set floor age",
                 value=st.session_state.get("scn_retirement_age_floor") is not None,
