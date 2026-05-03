@@ -74,6 +74,9 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
     "employer_match_pct": 0.0,
     "employer_match_cap_pct": 0.0,
     "accumulation_wage_income": 0,
+    "retirement_mode": "fixed",
+    "retirement_target_nw": 0,
+    "retirement_age_floor": None,
 }
 
 
@@ -94,6 +97,9 @@ def _load_default_scenario() -> dict:
               "current_age", "annual_savings", "accumulation_wage_income"):
         if k in loaded:
             loaded[k] = int(loaded[k])
+    # retirement_age_floor is nullable int — keep None as-is, coerce numeric to int.
+    if "retirement_age_floor" in loaded and loaded["retirement_age_floor"] is not None:
+        loaded["retirement_age_floor"] = int(loaded["retirement_age_floor"])
     # Convert savings_allocation list-of-pairs to per-account pct keys for sidebar widgets.
     if "savings_allocation" in loaded:
         alloc_map = {name: frac for name, frac in (loaded.pop("savings_allocation") or [])}
@@ -301,7 +307,10 @@ def render_sidebar() -> SimulationInputs:
         )
 
     st.sidebar.markdown("### Horizon")
-    start_age = st.sidebar.number_input("Retirement age", step=1, key="scn_start_age")
+    start_age = st.sidebar.number_input(
+        "Retirement age (ceiling in target-NW mode)", step=1, key="scn_start_age",
+        help="Fixed mode: retirement begins at this age. Target-NW mode: retirement begins when net worth hits the trigger, using this as the upper-bound ceiling.",
+    )
     horizon = st.sidebar.number_input("Years to simulate", step=1, key="scn_horizon_years")
 
     # Accumulation phase inputs
@@ -488,6 +497,41 @@ def render_sidebar() -> SimulationInputs:
              "saturated near 100%.",
     )
 
+    # Retirement trigger
+    with st.sidebar.expander("Retirement trigger", expanded=False):
+        retirement_mode = st.radio(
+            "Mode",
+            options=["fixed", "target_nw"],
+            format_func=lambda m: {"fixed": "Fixed age", "target_nw": "Target net worth"}[m],
+            key="scn_retirement_mode",
+            help="Fixed: retire at the retirement age above. Target NW: retire once net worth hits the trigger (up to the retirement age ceiling).",
+        )
+        if retirement_mode == "target_nw":
+            retirement_target_nw = st.number_input(
+                "Target net worth (real $)", min_value=0, step=10_000,
+                key="scn_retirement_target_nw",
+                help="Retire when real portfolio value reaches this amount (subject to floor and ceiling).",
+            )
+            if st.button("Set target = spend × 25", help="Standard FI heuristic: 25× annual spend covers ~4% SWR indefinitely."):
+                st.session_state["scn_retirement_target_nw"] = int(float(target) * 25)
+                st.rerun()
+            use_floor = st.checkbox(
+                "Set floor age",
+                value=st.session_state.get("scn_retirement_age_floor") is not None,
+                help="Lock in a minimum age before which retirement cannot trigger, even if net worth is hit.",
+            )
+            if use_floor:
+                retirement_age_floor = int(st.number_input(
+                    "Floor age (earliest retirement)", min_value=18, max_value=int(start_age),
+                    key="scn_retirement_age_floor_input",
+                    value=st.session_state.get("scn_retirement_age_floor") or int(current_age),
+                ))
+            else:
+                retirement_age_floor = None
+        else:
+            retirement_target_nw = float(st.session_state.get("scn_retirement_target_nw", 0))
+            retirement_age_floor = None
+
     # Build savings_allocation tuple from the five pct inputs.
     _retirement_age = int(start_age)
     _current_age = int(current_age)
@@ -538,6 +582,9 @@ def render_sidebar() -> SimulationInputs:
         employer_match_pct=employer_match_pct_ui / 100,
         employer_match_cap_pct=employer_match_cap_pct_ui / 100,
         accumulation_wage_income=float(accumulation_wage_income),
+        retirement_mode=retirement_mode,
+        retirement_target_nw=float(retirement_target_nw),
+        retirement_age_floor=retirement_age_floor,
     )
     # Build a JSON-serializable dict; savings_allocation becomes a list of [name, fraction] pairs.
     inputs_dict = {k: v for k, v in _dc.asdict(built_inputs).items() if k != "params"}
@@ -604,6 +651,13 @@ def single_scenario_view(base: SimulationInputs) -> None:
     summary = summarize(results)
 
     kpi_row(results, summary)
+
+    if base.retirement_mode == "target_nw":
+        actual_ret_age = summary.get("actual_retirement_age")
+        if actual_ret_age is not None:
+            st.info(f"Retirement triggered at age **{actual_ret_age}** (target NW reached).")
+        else:
+            st.info("Target NW not reached within horizon — retirement age ceiling applied.")
 
     st.plotly_chart(charts.balance_stack(results), use_container_width=True)
 
@@ -965,6 +1019,30 @@ undertax shocks. State LTCG uses the existing flat-rate model unchanged.
 **Concrete example:** a $200k house down-payment at age 40, against $50k cash + $300k
 taxable (50% gain ratio) at $150k wages, will sell ≈ $162k of taxable, realize ~$81k
 LTCG on top of wages, and pay ~$12k federal LTCG tax to net the required amount.
+
+---
+
+### Dynamic retirement trigger (target net worth mode)
+
+Standard fixed-age Monte Carlo is pessimistic for early-retirement scenarios: a bad
+sequence before the assumed retirement date depletes the portfolio and locks in a weakened
+starting balance, when in reality most people would simply delay retirement by a year or
+two until the portfolio recovers. The **target net worth** trigger corrects for this by
+letting the engine decide when retirement begins based on whether the portfolio has reached
+the FI goal, rather than always retiring at the same fixed age regardless of market
+conditions. The classic FI target is 25× annual spend (the 4% rule heuristic), which you
+can populate with the "Set target = spend × 25" button.
+
+Three parameters control the trigger: `retirement_target_nw` is the real-dollar net worth
+threshold; `retirement_age_floor` is the earliest age at which the trigger can fire (useful
+when there are accumulation commitments before a certain age); and `retirement_age` (the
+"Retirement age" field in the Horizon section) acts as a ceiling — if the target is never
+hit, retirement begins at that ceiling age regardless. At the end of each accumulation year
+the engine checks whether the portfolio equals or exceeds the target and the floor age has
+been reached; if so, the retirement phase begins the following year. In Monte Carlo runs,
+each path triggers independently, producing a distribution of actual retirement ages across
+paths; the histogram of those ages (shown in the Monte Carlo tab under this mode) reveals
+how much sequence-of-returns risk compresses or stretches the accumulation window.
 
 ---
 
