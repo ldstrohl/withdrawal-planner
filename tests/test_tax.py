@@ -1007,3 +1007,55 @@ def test_actual_retirement_age_none_when_horizon_ends_in_accumulation():
     for yr in r:
         assert yr.plan.phase == "accumulation"
     assert summarize(r)["actual_retirement_age"] is None
+
+
+def test_mc_target_nw_aggregation():
+    """MC run in target_nw mode populates retirement_ages, median_retirement_age, target_hit_rate."""
+    from planner.montecarlo import run_monte_carlo
+    from planner.returns import LognormalReturns
+    from planner.simulate import SimulationInputs
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=55, start_age=55,
+        retirement_mode="target_nw",
+        retirement_target_nw=500_000.0,
+        retirement_age_floor=40,
+        horizon_years=30,
+        initial_cash=100_000, initial_taxable=200_000, taxable_basis=100_000,
+        initial_traditional=150_000, initial_roth=50_000, roth_contributions=10_000.0,
+        initial_hsa=0,
+        annual_savings=30_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        target_spend=50_000,
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single", state_code="NONE",
+        stock_return=0.07, bond_return=0.02, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    model = LognormalReturns(mu_stocks=0.07, sigma_stocks=0.15, mu_bonds=0.02,
+                             sigma_bonds=0.06, mu_cash=0.0, sigma_cash=0.01, seed=99)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=50)
+    assert len(mc.retirement_ages) == 50
+    assert 0.0 <= mc.target_hit_rate <= 1.0
+    non_none = [a for a in mc.retirement_ages if a is not None]
+    if non_none:
+        assert isinstance(mc.median_retirement_age, int)
+        assert 40 <= mc.median_retirement_age <= 55
+
+
+def test_mc_fixed_mode_target_hit_rate_is_one():
+    """In fixed retirement_mode, every path has target_hit=True, so target_hit_rate==1.0."""
+    from planner.montecarlo import run_monte_carlo
+    from planner.returns import LognormalReturns
+    from planner.simulate import SimulationInputs
+    inputs = SimulationInputs(
+        start_age=45, horizon_years=20, retirement_age=45,
+        target_spend=50_000,
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single", state_code="NONE",
+        stock_return=0.07, bond_return=0.02, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    model = LognormalReturns(mu_stocks=0.07, sigma_stocks=0.15, mu_bonds=0.02,
+                             sigma_bonds=0.06, mu_cash=0.0, sigma_cash=0.01, seed=7)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=50)
+    assert mc.target_hit_rate == 1.0

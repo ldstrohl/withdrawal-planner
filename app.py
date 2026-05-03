@@ -754,6 +754,17 @@ def strategies_view(base: SimulationInputs) -> None:
                 row["Preservation rate"] = f"{mc.preservation_rate:.0%}" if mc else "—"
             else:
                 row["Success rate"] = f"{mc.success_rate:.0%}" if mc else "—"
+            any_target_nw = any(
+                strategy_inputs[n].retirement_mode == "target_nw" for n in chosen
+            )
+            if any_target_nw:
+                inp = strategy_inputs.get(name)
+                if inp and inp.retirement_mode == "target_nw" and mc:
+                    row["Median retire age"] = str(mc.median_retirement_age) if mc.median_retirement_age is not None else "—"
+                    row["Target hit %"] = f"{mc.target_hit_rate:.0%}"
+                else:
+                    row["Median retire age"] = "—"
+                    row["Target hit %"] = "—"
         rows.append(row)
     st.markdown("##### Lifetime summary")
     if mc_enabled:
@@ -819,6 +830,17 @@ def strategies_view(base: SimulationInputs) -> None:
             fig = charts.mc_fan_chart(mc)
             fig.update_layout(title=dict(text=f"{display}: MC fan chart"))
             st.plotly_chart(fig, use_container_width=True)
+
+        # Retirement age histograms (target_nw mode only)
+        target_nw_strategies = [n for n in chosen if strategy_inputs[n].retirement_mode == "target_nw"]
+        if target_nw_strategies:
+            st.markdown("##### Retirement age distribution (target net worth mode)")
+            for name in target_nw_strategies:
+                mc = mc_results[name]
+                display = STRATEGY_DISPLAY.get(name, name)
+                fig = charts.retirement_age_histogram(mc)
+                fig.update_layout(title=dict(text=f"{display}: retirement age distribution"))
+                st.plotly_chart(fig, use_container_width=True)
 
         # Path inspector (uses first chosen strategy as reference)
         st.markdown("##### Inspect a single Monte Carlo path under each strategy")

@@ -388,8 +388,12 @@ def simulate(
     return results
 
 
-def summarize(results: List[YearResult]) -> dict:
-    """Cross-cutting metrics for a single scenario."""
+def summarize(results: List[YearResult], inputs: Optional["SimulationInputs"] = None) -> dict:
+    """Cross-cutting metrics for a single scenario.
+
+    Pass `inputs` to enable `target_hit` computation for target_nw mode.
+    In fixed mode (or when inputs is None), `target_hit` is always True.
+    """
     if not results:
         return {}
     total_tax = sum(r.plan.federal_tax for r in results)
@@ -404,6 +408,24 @@ def summarize(results: List[YearResult]) -> dict:
     actual_retirement_age = next(
         (r.age for r in results if r.plan.phase == "retirement"), None
     )
+
+    # Compute target_hit.
+    if inputs is None or inputs.retirement_mode != "target_nw":
+        target_hit = True
+    elif actual_retirement_age is None:
+        target_hit = False
+    else:
+        retirement_ceiling = inputs.retirement_age if inputs.retirement_age is not None else inputs.start_age
+        if actual_retirement_age < retirement_ceiling:
+            target_hit = True
+        else:
+            # Ceiling-forced: check last accumulation year's ending_total
+            accum_years = [r for r in results if r.plan.phase == "accumulation"]
+            if not accum_years:
+                target_hit = True
+            else:
+                target_hit = accum_years[-1].ending_total >= inputs.retirement_target_nw
+
     return {
         "ending_total": last.ending_total,
         "ending_age": last.age,
@@ -418,4 +440,5 @@ def summarize(results: List[YearResult]) -> dict:
         "total_scheduled_income": total_scheduled_income,
         "total_scheduled_expense": total_scheduled_expense,
         "actual_retirement_age": actual_retirement_age,
+        "target_hit": target_hit,
     }
