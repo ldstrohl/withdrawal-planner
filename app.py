@@ -698,38 +698,39 @@ def strategies_view(base: SimulationInputs) -> None:
             f"(data: {preview.coverage[0]}–{preview.coverage[1]}, real returns from Shiller's S&P + 10y bond series; cash held at 0% real)."
         )
 
-    # Compute deterministic scenarios for all chosen strategies
-    scenarios = {}
-    for name in chosen:
-        inp = SimulationInputs(**{
+    # Build per-strategy SimulationInputs once.
+    strategy_inputs = {
+        name: SimulationInputs(**{
             **base.__dict__,
             "strategy": name,
             "custom_conversion": custom_amount if name == "custom" else None,
         })
-        scenarios[name] = cached_simulate(inp)
+        for name in chosen
+    }
 
     # Compute MC results when requested
     if model_choice == "lognormal":
-        for name in chosen:
-            inp = SimulationInputs(**{
-                **base.__dict__,
-                "strategy": name,
-                "custom_conversion": custom_amount if name == "custom" else None,
-            })
+        for name, inp in strategy_inputs.items():
             mc_results[name] = cached_mc_lognormal(
                 inputs=inp, n_runs=n_runs, seed=seed,
                 sigma_s=sigma_s, sigma_b=sigma_b, sigma_c=sigma_c, rho=rho,
             )
     elif model_choice == "historical":
-        for name in chosen:
-            inp = SimulationInputs(**{
-                **base.__dict__,
-                "strategy": name,
-                "custom_conversion": custom_amount if name == "custom" else None,
-            })
+        for name, inp in strategy_inputs.items():
             mc_results[name] = cached_mc_historical(inputs=inp, start_year_floor=1928)
 
     mc_enabled = model_choice in ("lognormal", "historical")
+
+    # `scenarios` drives the summary table, comparison charts, and per-strategy
+    # account-composition stacks. Under MC, use the median-by-ending-balance
+    # path so all three views agree on a single representative trajectory.
+    # In deterministic mode, use the constant-returns single run.
+    scenarios = {}
+    for name, inp in strategy_inputs.items():
+        if mc_enabled:
+            scenarios[name] = mc_results[name].median_path
+        else:
+            scenarios[name] = cached_simulate(inp)
     optimization_target = st.session_state.get("scn_optimization_target", "depletion")
 
     # Lifetime summary table
@@ -756,6 +757,11 @@ def strategies_view(base: SimulationInputs) -> None:
         rows.append(row)
     st.markdown("##### Lifetime summary")
     if mc_enabled:
+        st.caption(
+            "Per-strategy values and trajectories below reflect the **median Monte Carlo path** "
+            "(the path whose ending balance is the median across runs), not a deterministic "
+            "constant-returns run. Switch to *Deterministic* mode for the constant-returns view."
+        )
         if optimization_target == "preservation":
             st.markdown("*Optimization target: **Preservation** (% of paths ending ≥ starting real balance)*")
         else:
