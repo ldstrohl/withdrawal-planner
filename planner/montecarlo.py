@@ -27,7 +27,7 @@ class PathSummary:
 class MCSummary:
     inputs: SimulationInputs
     n_runs: int
-    success_rate: float          # fraction of paths with zero shortfall over full horizon
+    success_rate: float          # fraction of paths that did not deplete the portfolio
     median_ending: float
     p5_ending: float
     p95_ending: float
@@ -41,6 +41,7 @@ class MCSummary:
     p50_balance: List[float] = field(default_factory=list)
     p75_balance: List[float] = field(default_factory=list)
     p95_balance: List[float] = field(default_factory=list)
+    median_path: List[YearResult] = field(default_factory=list)
 
 
 def _percentile(sorted_values: List[float], q: float) -> float:
@@ -63,6 +64,7 @@ def run_monte_carlo(
     starting_total = build_portfolio(inputs).total
     per_year_balances: List[List[float]] = [[] for _ in range(inputs.horizon_years)]
     paths: List[PathSummary] = []
+    all_results: List[List[YearResult]] = []
 
     for i in range(n_runs):
         results: List[YearResult] = simulate(inputs, returns_model=returns_model, path_index=i)
@@ -76,13 +78,14 @@ def run_monte_carlo(
                 total_shortfall=s["total_shortfall"],
             )
         )
+        all_results.append(results)
         for y, r in enumerate(results):
             per_year_balances[y].append(r.ending_total)
         # Pad early-terminated paths with 0 for the rest of the horizon.
         for y in range(len(results), inputs.horizon_years):
             per_year_balances[y].append(0.0)
 
-    success = sum(1 for p in paths if p.total_shortfall <= 0.01) / n_runs
+    success = sum(1 for p in paths if not p.depleted) / n_runs
     preservation = sum(1 for p in paths if p.ending_total >= starting_total) / n_runs
     endings = sorted(p.ending_total for p in paths)
     median_ending = _percentile(endings, 0.5)
@@ -106,6 +109,10 @@ def run_monte_carlo(
         p75.append(_percentile(sb, 0.75))
         p95.append(_percentile(sb, 0.95))
 
+    # Median path: the path whose ending balance is the median.
+    median_idx = sorted(range(len(paths)), key=lambda i: paths[i].ending_total)[len(paths) // 2]
+    median_path = all_results[median_idx]
+
     return MCSummary(
         inputs=inputs,
         n_runs=n_runs,
@@ -123,4 +130,5 @@ def run_monte_carlo(
         p50_balance=p50,
         p75_balance=p75,
         p95_balance=p95,
+        median_path=median_path,
     )
