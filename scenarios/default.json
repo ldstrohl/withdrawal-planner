@@ -32,5 +32,8 @@
   "savings_allocation": [],
   "employer_match_pct": 0.0,
   "employer_match_cap_pct": 0.0,
-  "accumulation_wage_income": 0
+  "accumulation_wage_income": 0,
+  "retirement_mode": "fixed",
+  "retirement_target_nw": 0,
+  "retirement_age_floor": null
 }
