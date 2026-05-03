@@ -68,12 +68,15 @@ class SimulationInputs:
     spend_mode: str = "fixed"     # "fixed" (uses target_spend) | "swr" (rate × starting NW)
     spend_rate: float = 0.035     # used only when spend_mode == "swr"
     current_age: Optional[int] = None         # when None, treated as start_age (no accumulation phase)
-    retirement_age: Optional[int] = None      # when None, treated as start_age
+    retirement_age: Optional[int] = None      # when None, treated as start_age. In target_nw mode, acts as a ceiling.
     annual_savings: float = 0.0
     savings_allocation: tuple = ()            # tuple of (account_name, fraction) pairs
     employer_match_pct: float = 0.0
     employer_match_cap_pct: float = 0.0       # 0 means uncapped match
     accumulation_wage_income: float = 0.0
+    retirement_mode: str = "fixed"            # "fixed" | "target_nw"
+    retirement_target_nw: float = 0.0         # real $ net worth trigger (target_nw mode only)
+    retirement_age_floor: Optional[int] = None  # earliest retirement age (target_nw mode only)
 
 
 def build_portfolio(inputs: SimulationInputs) -> Portfolio:
@@ -286,12 +289,19 @@ def simulate(
 
     current_age = inputs.current_age if inputs.current_age is not None else inputs.start_age
     retirement_age = inputs.retirement_age if inputs.retirement_age is not None else inputs.start_age
+    # In target_nw mode, accumulation may end early (target hit) or late (ceiling). The
+    # boundary is mutated only in target_nw mode; fixed mode preserves the legacy guard.
+    target_nw_mode = inputs.retirement_mode == "target_nw"
+    effective_floor = (
+        inputs.retirement_age_floor if inputs.retirement_age_floor is not None else current_age
+    )
+    boundary_age = retirement_age
 
     peak_total = portfolio.total
     for y in range(inputs.horizon_years):
         age = current_age + y
 
-        if age < retirement_age:
+        if age < boundary_age:
             _run_accumulation_year(
                 portfolio=portfolio,
                 age=age,
@@ -305,6 +315,10 @@ def simulate(
                 effective_spend=effective_spend,
             )
             peak_total = max(peak_total, portfolio.total)
+            if target_nw_mode and (age + 1) < boundary_age:
+                # End-of-year transition check: retire starting Y+1 if target hit and floor met.
+                if portfolio.total >= inputs.retirement_target_nw and (age + 1) >= effective_floor:
+                    boundary_age = age + 1
             continue
 
         # 1. Capture beginning-of-year balance (pre-growth) for SWR-conventional WR denominator.
@@ -387,6 +401,9 @@ def summarize(results: List[YearResult]) -> dict:
     total_scheduled_income = sum(r.plan.scheduled_income for r in results)
     total_scheduled_expense = sum(r.plan.scheduled_expense for r in results)
     last = results[-1]
+    actual_retirement_age = next(
+        (r.age for r in results if r.plan.phase == "retirement"), None
+    )
     return {
         "ending_total": last.ending_total,
         "ending_age": last.age,
@@ -400,4 +417,5 @@ def summarize(results: List[YearResult]) -> dict:
         "total_state_tax": total_state_tax,
         "total_scheduled_income": total_scheduled_income,
         "total_scheduled_expense": total_scheduled_expense,
+        "actual_retirement_age": actual_retirement_age,
     }
