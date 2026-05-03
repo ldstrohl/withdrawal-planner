@@ -425,6 +425,67 @@ def mc_fan_chart(mc) -> go.Figure:
     return fig
 
 
+def retirement_age_histogram(mc) -> go.Figure:
+    """Histogram of per-path retirement ages from a Monte Carlo run.
+
+    Drops None (never-retired) paths and notes their count in an annotation.
+    Adds vertical reference lines for floor and ceiling retirement ages.
+    """
+    ages = [a for a in mc.retirement_ages if a is not None]
+    never_count = len(mc.retirement_ages) - len(ages)
+
+    fig = go.Figure()
+    if ages:
+        fig.add_trace(
+            go.Histogram(
+                x=ages,
+                name="Retirement age",
+                marker_color=PALETTE["roth"],
+                hovertemplate="Age %{x}: %{y} paths<extra></extra>",
+                xbins=dict(size=1),
+            )
+        )
+
+    ceiling = mc.inputs.retirement_age if mc.inputs.retirement_age is not None else mc.inputs.start_age
+    fig.add_vline(
+        x=ceiling,
+        line_width=2,
+        line_dash="dash",
+        line_color="#EF4444",
+        annotation_text=f"Ceiling ({ceiling})",
+        annotation_position="top right",
+    )
+
+    if mc.inputs.retirement_age_floor is not None:
+        fig.add_vline(
+            x=mc.inputs.retirement_age_floor,
+            line_width=2,
+            line_dash="dot",
+            line_color="#6B7280",
+            annotation_text=f"Floor ({mc.inputs.retirement_age_floor})",
+            annotation_position="top left",
+        )
+
+    annotations = []
+    if never_count > 0:
+        annotations.append(dict(
+            x=0.99, y=0.97, xref="paper", yref="paper",
+            text=f"{never_count} path(s) never reached retirement",
+            showarrow=False,
+            font=dict(size=11, color="#6B7280"),
+            xanchor="right", yanchor="top",
+        ))
+
+    layout = _layout(
+        "Retirement age distribution (Monte Carlo)",
+        xaxis=dict(title="Retirement age"),
+        yaxis=dict(title="Number of paths"),
+    )
+    layout["annotations"] = annotations
+    fig.update_layout(**layout)
+    return fig
+
+
 def mc_success_kpis(mc) -> Dict[str, str]:
     """Format MC summary for KPI display."""
     out = {

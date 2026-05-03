@@ -42,6 +42,9 @@ class MCSummary:
     p75_balance: List[float] = field(default_factory=list)
     p95_balance: List[float] = field(default_factory=list)
     median_path: List[YearResult] = field(default_factory=list)
+    retirement_ages: List[Optional[int]] = field(default_factory=list)
+    median_retirement_age: Optional[int] = None
+    target_hit_rate: float = 0.0
 
 
 def _percentile(sorted_values: List[float], q: float) -> float:
@@ -66,9 +69,11 @@ def run_monte_carlo(
     paths: List[PathSummary] = []
     all_results: List[List[YearResult]] = []
 
+    retirement_ages: List[Optional[int]] = []
+    target_hit_count = 0
     for i in range(n_runs):
         results: List[YearResult] = simulate(inputs, returns_model=returns_model, path_index=i)
-        s = summarize(results)
+        s = summarize(results, inputs=inputs)
         paths.append(
             PathSummary(
                 path_index=i,
@@ -78,6 +83,9 @@ def run_monte_carlo(
                 total_shortfall=s["total_shortfall"],
             )
         )
+        retirement_ages.append(s["actual_retirement_age"])
+        if s["target_hit"]:
+            target_hit_count += 1
         all_results.append(results)
         for y, r in enumerate(results):
             per_year_balances[y].append(r.ending_total)
@@ -113,6 +121,13 @@ def run_monte_carlo(
     median_idx = sorted(range(len(paths)), key=lambda i: paths[i].ending_total)[len(paths) // 2]
     median_path = all_results[median_idx]
 
+    non_none_ages = [a for a in retirement_ages if a is not None]
+    if non_none_ages:
+        median_retirement_age = int(_percentile(sorted([float(a) for a in non_none_ages]), 0.5))
+    else:
+        median_retirement_age = None
+    target_hit_rate = target_hit_count / n_runs
+
     return MCSummary(
         inputs=inputs,
         n_runs=n_runs,
@@ -131,4 +146,7 @@ def run_monte_carlo(
         p75_balance=p75,
         p95_balance=p95,
         median_path=median_path,
+        retirement_ages=retirement_ages,
+        median_retirement_age=median_retirement_age,
+        target_hit_rate=target_hit_rate,
     )
