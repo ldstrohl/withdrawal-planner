@@ -20,11 +20,11 @@ Tracking deferred enhancements. Items are unchecked until implemented.
 - [ ] IRMAA 2-year MAGI lookback (currently uses current-year MAGI)
 - [ ] Wage income post-retirement (partial retirement / consulting)
 
+## Modeling
+
+- [ ] Dynamic retirement age — retire when NW hits a target (with optional age floor/ceiling) instead of fixed-age. Fixed-age MC is pessimistic for early-retirement scenarios: pre-retirement downturns lock in a depleted starting balance rather than realistically deferring retirement 1-2 years (continued contributions + recovery). Touches per-path transition year (MC fan charts need path-varying boundaries), success-rate semantics (bound by ceiling age or flag "never reached target" paths), and UI for target/bounds.
+
 ## UX
 
 - [ ] Phase marker / shaded region on time-series charts
 - [ ] Sensitivity analysis (savings rate vs retirement date trade space)
-
-## Build & deploy
-
-- [ ] Unpin Python 3.12 in `runtime.txt` once `planner/simulate.py` is 3.14-compatible. PR #4 pinned because Streamlit Cloud on 3.14 fails `SimulationInputs.__init__() got an unexpected keyword argument 'current_age'` despite the field being declared. Suspect: `from __future__ import annotations` + `@dataclass(frozen=True)` + `Optional[int]` interaction with PEP 649 deferred annotations. Try removing the `__future__` import or switching `Optional[int]` → `int | None` and verify on a 3.14 venv.
