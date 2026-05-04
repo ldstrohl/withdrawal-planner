@@ -678,50 +678,6 @@ def test_allocation_routes_correctly():
     assert snap["hsa"] == 0.0
 
 
-def test_employer_match_routes_to_traditional():
-    """Employer match always lands in traditional regardless of savings_allocation."""
-    from planner.simulate import SimulationInputs, simulate
-    from planner.returns import ConstantReturns
-    inputs = SimulationInputs(
-        current_age=35, retirement_age=36, start_age=36, horizon_years=1,
-        annual_savings=10_000.0,
-        accumulation_wage_income=100_000.0,
-        employer_match_pct=0.05,
-        employer_match_cap_pct=0.0,
-        savings_allocation=(("roth", 1.0),),
-        initial_cash=0, initial_taxable=0, taxable_basis=0,
-        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
-        target_spend=0,
-        stock_return=0.0, bond_return=0.0, cash_return=0.0,
-    )
-    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
-    snap = r[0].snapshot
-    assert abs(snap["traditional"] - 5_000) < 1e-6, snap["traditional"]
-    assert abs(snap["roth_contributions"] - 10_000) < 1e-6, snap["roth_contributions"]
-
-
-def test_employer_match_cap_applies():
-    """employer_match_cap_pct limits the match even if employer_match_pct is higher."""
-    from planner.simulate import SimulationInputs, simulate
-    from planner.returns import ConstantReturns
-    inputs = SimulationInputs(
-        current_age=35, retirement_age=36, start_age=36, horizon_years=1,
-        annual_savings=10_000.0,
-        accumulation_wage_income=100_000.0,
-        employer_match_pct=0.10,
-        employer_match_cap_pct=0.05,
-        savings_allocation=(("roth", 1.0),),
-        initial_cash=0, initial_taxable=0, taxable_basis=0,
-        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
-        target_spend=0,
-        stock_return=0.0, bond_return=0.0, cash_return=0.0,
-    )
-    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
-    snap = r[0].snapshot
-    # Raw match = 10k, capped to 5k (5% of 100k)
-    assert abs(snap["traditional"] - 5_000) < 1e-6, snap["traditional"]
-
-
 def test_roth_contributions_during_accumulation_withdrawable_in_retirement():
     """Roth contributions built up during accumulation can be drawn in retirement."""
     from planner.simulate import SimulationInputs, simulate

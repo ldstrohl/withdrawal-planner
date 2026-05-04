@@ -71,8 +71,6 @@ class SimulationInputs:
     retirement_age: Optional[int] = None      # when None, treated as start_age. In target_nw mode, acts as a ceiling.
     annual_savings: float = 0.0
     savings_allocation: tuple = ()            # tuple of (account_name, fraction) pairs
-    employer_match_pct: float = 0.0
-    employer_match_cap_pct: float = 0.0       # 0 means uncapped match
     accumulation_wage_income: float = 0.0
     retirement_mode: str = "fixed"            # "fixed" | "target_nw"
     retirement_target_nw: float = 0.0         # real $ net worth trigger (target_nw mode only)
@@ -177,15 +175,10 @@ def _run_accumulation_year(
     portfolio.apply_growth(year_returns)
 
     wages = inputs.accumulation_wage_income
-    match_raw = wages * inputs.employer_match_pct
-    if inputs.employer_match_cap_pct > 0:
-        match = min(match_raw, wages * inputs.employer_match_cap_pct)
-    else:
-        match = match_raw
 
     sched_income, _sched_taxable = active_income(inputs.income_streams, age)
     sched_expense = active_expense(inputs.expense_streams, age)
-    pool = inputs.annual_savings + sched_income + match
+    pool = inputs.annual_savings + sched_income
 
     allocation_dict = dict(inputs.savings_allocation)
 
@@ -195,15 +188,10 @@ def _run_accumulation_year(
     ltcg_tax_state = 0.0
     unmet = 0.0
     if net >= 0:
-        if match > 0:
-            portfolio.traditional.deposit(match)
-        remainder = max(net - match, 0.0)
-        if remainder > 0:
-            portfolio.contribute(allocation_dict, remainder)
-        contribution = max(net, 0.0)
+        if net > 0:
+            portfolio.contribute(allocation_dict, net)
+        contribution = net
     else:
-        if match > 0:
-            portfolio.traditional.deposit(match)
         shortfall_remaining = -net
         cash_take = portfolio.cash.withdraw(shortfall_remaining)
         shortfall_remaining -= cash_take
@@ -215,7 +203,7 @@ def _run_accumulation_year(
                 tax_params,
                 state_params,
             )
-        contribution = match
+        contribution = 0.0
 
     plan = PlanResult(
         withdrawals=Withdrawals(),

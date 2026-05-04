@@ -47,7 +47,7 @@ Model pre-retirement saving and one-time or recurring expense shocks before the
 retirement phase begins.
 
 Inputs: `current_age`, `retirement_age`, `annual_savings`, `savings_allocation`,
-`employer_match_pct`, `employer_match_cap_pct`, `accumulation_wage_income`.
+`accumulation_wage_income`.
 
 Savings are entered as **net dollars** (after income tax and FICA); `accumulation_wage_income`
 is used only as the LTCG stacking baseline when a taxable sale is forced by an expense shock —
