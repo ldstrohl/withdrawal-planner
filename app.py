@@ -241,15 +241,19 @@ def render_sidebar() -> SimulationInputs:
         st.session_state.setdefault(f"scn_{k}", v)
     st.session_state.setdefault("scn_optimization_target", "depletion")
 
-    # G. Scenario save/load — top of sidebar
-    with st.sidebar.expander("Scenario (save / load)", expanded=False):
+    # G. Scenario save/load — top of sidebar (save UI is added at the bottom after inputs are built)
+    _save_load_exp = st.sidebar.expander("Scenario (save / load)", expanded=False)
+    with _save_load_exp:
         uploaded = st.file_uploader("Load JSON", type="json", key="scenario_upload")
         if uploaded is not None:
-            data = _normalize_loaded_scenario(_json.load(uploaded))
-            for k, v in data.items():
-                if f"scn_{k}" in st.session_state or k in _SIDEBAR_DEFAULTS:
-                    st.session_state[f"scn_{k}"] = v
-            st.success("Scenario loaded — adjust below if needed.")
+            _upload_id = f"{uploaded.name}_{uploaded.size}"
+            if st.session_state.get("_last_upload_id") != _upload_id:
+                data = _normalize_loaded_scenario(_json.load(uploaded))
+                for k, v in data.items():
+                    if f"scn_{k}" in st.session_state or k in _SIDEBAR_DEFAULTS:
+                        st.session_state[f"scn_{k}"] = v
+                st.session_state["_last_upload_id"] = _upload_id
+                st.success("Scenario loaded — adjust below if needed.")
 
     st.sidebar.markdown("### Initial balances (real $)")
     cash = st.sidebar.number_input("Cash", step=1_000, key="scn_initial_cash")
@@ -602,12 +606,15 @@ def render_sidebar() -> SimulationInputs:
     inputs_dict["savings_allocation"] = [
         [name, frac] for name, frac in built_inputs.savings_allocation if frac > 0
     ]
-    st.sidebar.download_button(
-        "Save scenario JSON",
-        data=_json.dumps(inputs_dict, indent=2),
-        file_name="scenario.json",
-        mime="application/json",
-    )
+    with _save_load_exp:
+        st.divider()
+        _save_name = st.text_input("Save as", value="scenario", key="scenario_save_name")
+        st.download_button(
+            "Save scenario JSON",
+            data=_json.dumps(inputs_dict, indent=2),
+            file_name=f"{_save_name}.json",
+            mime="application/json",
+        )
 
     return built_inputs
 
