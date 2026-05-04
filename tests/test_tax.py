@@ -678,50 +678,6 @@ def test_allocation_routes_correctly():
     assert snap["hsa"] == 0.0
 
 
-def test_employer_match_routes_to_traditional():
-    """Employer match always lands in traditional regardless of savings_allocation."""
-    from planner.simulate import SimulationInputs, simulate
-    from planner.returns import ConstantReturns
-    inputs = SimulationInputs(
-        current_age=35, retirement_age=36, start_age=36, horizon_years=1,
-        annual_savings=10_000.0,
-        accumulation_wage_income=100_000.0,
-        employer_match_pct=0.05,
-        employer_match_cap_pct=0.0,
-        savings_allocation=(("roth", 1.0),),
-        initial_cash=0, initial_taxable=0, taxable_basis=0,
-        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
-        target_spend=0,
-        stock_return=0.0, bond_return=0.0, cash_return=0.0,
-    )
-    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
-    snap = r[0].snapshot
-    assert abs(snap["traditional"] - 5_000) < 1e-6, snap["traditional"]
-    assert abs(snap["roth_contributions"] - 10_000) < 1e-6, snap["roth_contributions"]
-
-
-def test_employer_match_cap_applies():
-    """employer_match_cap_pct limits the match even if employer_match_pct is higher."""
-    from planner.simulate import SimulationInputs, simulate
-    from planner.returns import ConstantReturns
-    inputs = SimulationInputs(
-        current_age=35, retirement_age=36, start_age=36, horizon_years=1,
-        annual_savings=10_000.0,
-        accumulation_wage_income=100_000.0,
-        employer_match_pct=0.10,
-        employer_match_cap_pct=0.05,
-        savings_allocation=(("roth", 1.0),),
-        initial_cash=0, initial_taxable=0, taxable_basis=0,
-        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
-        target_spend=0,
-        stock_return=0.0, bond_return=0.0, cash_return=0.0,
-    )
-    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
-    snap = r[0].snapshot
-    # Raw match = 10k, capped to 5k (5% of 100k)
-    assert abs(snap["traditional"] - 5_000) < 1e-6, snap["traditional"]
-
-
 def test_roth_contributions_during_accumulation_withdrawable_in_retirement():
     """Roth contributions built up during accumulation can be drawn in retirement."""
     from planner.simulate import SimulationInputs, simulate
@@ -862,3 +818,200 @@ def test_mortgage_stream_crosses_retirement_boundary():
     for i in range(5, 10):
         assert r[i].plan.phase == "retirement", f"Expected retirement at index {i}, got {r[i].plan.phase}"
         assert r[i].plan.scheduled_expense == 24_000, f"Expected 24k expense at index {i}"
+
+
+# --- dynamic retirement (target-net-worth mode) tests ----------------------
+
+def _dynamic_ret_base_kwargs():
+    """Shared baseline for target_nw tests: deterministic accumulation, no retirement spend complexity."""
+    return dict(
+        current_age=35,
+        start_age=35,
+        horizon_years=15,
+        annual_savings=50_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=20_000,
+        strategy="minimal_convert",
+        ss_annual_benefit=0,
+        filing_status="single",
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+        state_code="NONE",
+    )
+
+
+def test_fixed_mode_default_unchanged_per_year():
+    """Per-year results must match exactly when retirement_mode is unset vs explicit 'fixed'."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    base_kwargs = dict(
+        current_age=40, retirement_age=45, start_age=45, horizon_years=10,
+        annual_savings=50_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        initial_cash=200_000, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=40_000,
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single",
+        state_code="NONE",
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    legacy = simulate(SimulationInputs(**base_kwargs), returns_model=ConstantReturns(0, 0, 0))
+    explicit = simulate(
+        SimulationInputs(**base_kwargs, retirement_mode="fixed"),
+        returns_model=ConstantReturns(0, 0, 0),
+    )
+    assert len(legacy) == len(explicit)
+    for a, b in zip(legacy, explicit):
+        assert a.age == b.age
+        assert a.ending_total == b.ending_total
+        assert a.starting_total == b.starting_total
+        assert a.plan.phase == b.plan.phase
+        assert a.plan.federal_tax == b.plan.federal_tax
+        assert a.snapshot == b.snapshot
+
+
+def test_target_nw_hit_retires_next_year():
+    """Target hit at end of accumulation year Y -> retirement starts year Y+1."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.returns import ConstantReturns
+    # 50k/yr saving, target 200k -> hit at end of year 3 (age 38). Retires at age 39.
+    inputs = SimulationInputs(
+        retirement_age=60,  # ceiling, far away
+        retirement_mode="target_nw",
+        retirement_target_nw=200_000.0,
+        **_dynamic_ret_base_kwargs(),
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    assert r[3].plan.phase == "accumulation"
+    assert r[3].age == 38
+    assert abs(r[3].ending_total - 200_000) < 1e-6
+    assert r[4].plan.phase == "retirement"
+    assert r[4].age == 39
+    assert summarize(r)["actual_retirement_age"] == 39
+
+
+def test_target_nw_floor_delays_retirement():
+    """Target hit early but floor age not yet reached -> retirement waits for floor."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.returns import ConstantReturns
+    # Target hit at age 38; floor=50 -> retire at 50. Need horizon to reach age 50.
+    kwargs = _dynamic_ret_base_kwargs()
+    kwargs["horizon_years"] = 20
+    inputs = SimulationInputs(
+        retirement_age=60,
+        retirement_mode="target_nw",
+        retirement_target_nw=200_000.0,
+        retirement_age_floor=50,
+        **kwargs,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    # Find the first retirement-phase year
+    actual = summarize(r)["actual_retirement_age"]
+    assert actual == 50, actual
+
+
+def test_target_nw_ceiling_forces_retirement():
+    """Target never hit -> retirement_age (ceiling) forces transition."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        retirement_age=45,  # ceiling
+        retirement_mode="target_nw",
+        retirement_target_nw=100_000_000.0,  # absurd, never hit
+        **_dynamic_ret_base_kwargs(),
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    assert summarize(r)["actual_retirement_age"] == 45
+
+
+def test_actual_retirement_age_fixed_mode_returns_int():
+    """In a normal fixed-mode run, actual_retirement_age is the first retirement-phase age."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=40, retirement_age=45, start_age=45, horizon_years=10,
+        annual_savings=50_000.0, savings_allocation=(("taxable", 1.0),),
+        initial_cash=200_000, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=40_000,
+        filing_status="single", state_code="NONE",
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    s = summarize(simulate(inputs, returns_model=ConstantReturns(0, 0, 0)))
+    assert s["actual_retirement_age"] == 45
+
+
+def test_actual_retirement_age_none_when_horizon_ends_in_accumulation():
+    """Pure-accumulation horizon: no retirement-phase year exists -> None."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.returns import ConstantReturns
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=60, start_age=60, horizon_years=10,
+        annual_savings=10_000.0, savings_allocation=(("taxable", 1.0),),
+        initial_cash=0, initial_taxable=0, taxable_basis=0,
+        initial_traditional=0, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=0,
+        filing_status="single", state_code="NONE",
+        stock_return=0.0, bond_return=0.0, cash_return=0.0,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    # All 10 years are accumulation (ages 35-44, all < retirement_age=60)
+    for yr in r:
+        assert yr.plan.phase == "accumulation"
+    assert summarize(r)["actual_retirement_age"] is None
+
+
+def test_mc_target_nw_aggregation():
+    """MC run in target_nw mode populates retirement_ages, median_retirement_age, target_hit_rate."""
+    from planner.montecarlo import run_monte_carlo
+    from planner.returns import LognormalReturns
+    from planner.simulate import SimulationInputs
+    inputs = SimulationInputs(
+        current_age=35, retirement_age=55, start_age=55,
+        retirement_mode="target_nw",
+        retirement_target_nw=500_000.0,
+        retirement_age_floor=40,
+        horizon_years=30,
+        initial_cash=100_000, initial_taxable=200_000, taxable_basis=100_000,
+        initial_traditional=150_000, initial_roth=50_000, roth_contributions=10_000.0,
+        initial_hsa=0,
+        annual_savings=30_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        target_spend=50_000,
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single", state_code="NONE",
+        stock_return=0.07, bond_return=0.02, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    model = LognormalReturns(mu_stocks=0.07, sigma_stocks=0.15, mu_bonds=0.02,
+                             sigma_bonds=0.06, mu_cash=0.0, sigma_cash=0.01, seed=99)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=50)
+    assert len(mc.retirement_ages) == 50
+    assert 0.0 <= mc.target_hit_rate <= 1.0
+    non_none = [a for a in mc.retirement_ages if a is not None]
+    if non_none:
+        assert isinstance(mc.median_retirement_age, int)
+        assert 40 <= mc.median_retirement_age <= 55
+
+
+def test_mc_fixed_mode_target_hit_rate_is_one():
+    """In fixed retirement_mode, every path has target_hit=True, so target_hit_rate==1.0."""
+    from planner.montecarlo import run_monte_carlo
+    from planner.returns import LognormalReturns
+    from planner.simulate import SimulationInputs
+    inputs = SimulationInputs(
+        start_age=45, horizon_years=20, retirement_age=45,
+        target_spend=50_000,
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single", state_code="NONE",
+        stock_return=0.07, bond_return=0.02, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    model = LognormalReturns(mu_stocks=0.07, sigma_stocks=0.15, mu_bonds=0.02,
+                             sigma_bonds=0.06, mu_cash=0.0, sigma_cash=0.01, seed=7)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=50)
+    assert mc.target_hit_rate == 1.0

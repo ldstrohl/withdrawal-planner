@@ -68,12 +68,13 @@ class SimulationInputs:
     spend_mode: str = "fixed"     # "fixed" (uses target_spend) | "swr" (rate × starting NW)
     spend_rate: float = 0.035     # used only when spend_mode == "swr"
     current_age: Optional[int] = None         # when None, treated as start_age (no accumulation phase)
-    retirement_age: Optional[int] = None      # when None, treated as start_age
+    retirement_age: Optional[int] = None      # when None, treated as start_age. In target_nw mode, acts as a ceiling.
     annual_savings: float = 0.0
     savings_allocation: tuple = ()            # tuple of (account_name, fraction) pairs
-    employer_match_pct: float = 0.0
-    employer_match_cap_pct: float = 0.0       # 0 means uncapped match
     accumulation_wage_income: float = 0.0
+    retirement_mode: str = "fixed"            # "fixed" | "target_nw"
+    retirement_target_nw: float = 0.0         # real $ net worth trigger (target_nw mode only)
+    retirement_age_floor: Optional[int] = None  # earliest retirement age (target_nw mode only)
 
 
 def build_portfolio(inputs: SimulationInputs) -> Portfolio:
@@ -174,15 +175,10 @@ def _run_accumulation_year(
     portfolio.apply_growth(year_returns)
 
     wages = inputs.accumulation_wage_income
-    match_raw = wages * inputs.employer_match_pct
-    if inputs.employer_match_cap_pct > 0:
-        match = min(match_raw, wages * inputs.employer_match_cap_pct)
-    else:
-        match = match_raw
 
     sched_income, _sched_taxable = active_income(inputs.income_streams, age)
     sched_expense = active_expense(inputs.expense_streams, age)
-    pool = inputs.annual_savings + sched_income + match
+    pool = inputs.annual_savings + sched_income
 
     allocation_dict = dict(inputs.savings_allocation)
 
@@ -192,15 +188,10 @@ def _run_accumulation_year(
     ltcg_tax_state = 0.0
     unmet = 0.0
     if net >= 0:
-        if match > 0:
-            portfolio.traditional.deposit(match)
-        remainder = max(net - match, 0.0)
-        if remainder > 0:
-            portfolio.contribute(allocation_dict, remainder)
-        contribution = max(net, 0.0)
+        if net > 0:
+            portfolio.contribute(allocation_dict, net)
+        contribution = net
     else:
-        if match > 0:
-            portfolio.traditional.deposit(match)
         shortfall_remaining = -net
         cash_take = portfolio.cash.withdraw(shortfall_remaining)
         shortfall_remaining -= cash_take
@@ -212,7 +203,7 @@ def _run_accumulation_year(
                 tax_params,
                 state_params,
             )
-        contribution = match
+        contribution = 0.0
 
     plan = PlanResult(
         withdrawals=Withdrawals(),
@@ -286,12 +277,19 @@ def simulate(
 
     current_age = inputs.current_age if inputs.current_age is not None else inputs.start_age
     retirement_age = inputs.retirement_age if inputs.retirement_age is not None else inputs.start_age
+    # In target_nw mode, accumulation may end early (target hit) or late (ceiling). The
+    # boundary is mutated only in target_nw mode; fixed mode preserves the legacy guard.
+    target_nw_mode = inputs.retirement_mode == "target_nw"
+    effective_floor = (
+        inputs.retirement_age_floor if inputs.retirement_age_floor is not None else current_age
+    )
+    boundary_age = retirement_age
 
     peak_total = portfolio.total
     for y in range(inputs.horizon_years):
         age = current_age + y
 
-        if age < retirement_age:
+        if age < boundary_age:
             _run_accumulation_year(
                 portfolio=portfolio,
                 age=age,
@@ -305,6 +303,10 @@ def simulate(
                 effective_spend=effective_spend,
             )
             peak_total = max(peak_total, portfolio.total)
+            if target_nw_mode and (age + 1) < boundary_age:
+                # End-of-year transition check: retire starting Y+1 if target hit and floor met.
+                if portfolio.total >= inputs.retirement_target_nw and (age + 1) >= effective_floor:
+                    boundary_age = age + 1
             continue
 
         # 1. Capture beginning-of-year balance (pre-growth) for SWR-conventional WR denominator.
@@ -374,8 +376,12 @@ def simulate(
     return results
 
 
-def summarize(results: List[YearResult]) -> dict:
-    """Cross-cutting metrics for a single scenario."""
+def summarize(results: List[YearResult], inputs: Optional["SimulationInputs"] = None) -> dict:
+    """Cross-cutting metrics for a single scenario.
+
+    Pass `inputs` to enable `target_hit` computation for target_nw mode.
+    In fixed mode (or when inputs is None), `target_hit` is always True.
+    """
     if not results:
         return {}
     total_tax = sum(r.plan.federal_tax for r in results)
@@ -387,6 +393,27 @@ def summarize(results: List[YearResult]) -> dict:
     total_scheduled_income = sum(r.plan.scheduled_income for r in results)
     total_scheduled_expense = sum(r.plan.scheduled_expense for r in results)
     last = results[-1]
+    actual_retirement_age = next(
+        (r.age for r in results if r.plan.phase == "retirement"), None
+    )
+
+    # Compute target_hit.
+    if inputs is None or inputs.retirement_mode != "target_nw":
+        target_hit = True
+    elif actual_retirement_age is None:
+        target_hit = False
+    else:
+        retirement_ceiling = inputs.retirement_age if inputs.retirement_age is not None else inputs.start_age
+        if actual_retirement_age < retirement_ceiling:
+            target_hit = True
+        else:
+            # Ceiling-forced: check last accumulation year's ending_total
+            accum_years = [r for r in results if r.plan.phase == "accumulation"]
+            if not accum_years:
+                target_hit = True
+            else:
+                target_hit = accum_years[-1].ending_total >= inputs.retirement_target_nw
+
     return {
         "ending_total": last.ending_total,
         "ending_age": last.age,
@@ -400,4 +427,6 @@ def summarize(results: List[YearResult]) -> dict:
         "total_state_tax": total_state_tax,
         "total_scheduled_income": total_scheduled_income,
         "total_scheduled_expense": total_scheduled_expense,
+        "actual_retirement_age": actual_retirement_age,
+        "target_hit": target_hit,
     }

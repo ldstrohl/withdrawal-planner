@@ -63,7 +63,7 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
     "state_ltcg_rate": 0.0,
     "state_ltcg_threshold": 0.0,
     "spend_mode": "fixed",
-    "spend_rate": 0.035,
+    "spend_rate_pct": 3.5,
     "current_age": 35,
     "annual_savings": 0,
     "savings_allocation_cash_pct": 0,
@@ -71,10 +71,42 @@ _SIDEBAR_FALLBACK_DEFAULTS = {
     "savings_allocation_traditional_pct": 0,
     "savings_allocation_roth_pct": 0,
     "savings_allocation_hsa_pct": 0,
-    "employer_match_pct": 0.0,
-    "employer_match_cap_pct": 0.0,
     "accumulation_wage_income": 0,
+    "retirement_mode": "fixed",
+    "retirement_target_nw": 0,
+    "retirement_age_floor": None,
 }
+
+
+def _normalize_loaded_scenario(loaded: dict) -> dict:
+    """Coerce a JSON scenario dict into sidebar-widget-shaped keys.
+
+    Strips per-tab fields, coerces ints, and explodes savings_allocation
+    list-of-pairs into the per-account scn_savings_allocation_*_pct keys.
+    """
+    loaded = dict(loaded)
+    for k in ("strategy", "custom_conversion"):
+        loaded.pop(k, None)
+    for k in ("initial_cash", "initial_taxable", "taxable_basis", "initial_traditional",
+              "initial_roth", "roth_contributions", "initial_hsa", "target_spend",
+              "start_age", "horizon_years", "ss_annual_benefit", "ss_claim_age",
+              "current_age", "annual_savings", "accumulation_wage_income"):
+        if k in loaded:
+            loaded[k] = int(loaded[k])
+    if "retirement_age_floor" in loaded and loaded["retirement_age_floor"] is not None:
+        loaded["retirement_age_floor"] = int(loaded["retirement_age_floor"])
+    # spend_rate is stored as a fraction in JSON (engine-side) but the sidebar
+    # widget edits the percentage. Convert on load.
+    if "spend_rate" in loaded:
+        loaded["spend_rate_pct"] = round(float(loaded.pop("spend_rate")) * 100, 1)
+    if "savings_allocation" in loaded:
+        alloc_map = {name: frac for name, frac in (loaded.pop("savings_allocation") or [])}
+        loaded["savings_allocation_cash_pct"] = int(round(alloc_map.get("cash", 0.0) * 100))
+        loaded["savings_allocation_taxable_pct"] = int(round(alloc_map.get("taxable", 0.0) * 100))
+        loaded["savings_allocation_traditional_pct"] = int(round(alloc_map.get("traditional", 0.0) * 100))
+        loaded["savings_allocation_roth_pct"] = int(round(alloc_map.get("roth", 0.0) * 100))
+        loaded["savings_allocation_hsa_pct"] = int(round(alloc_map.get("hsa", 0.0) * 100))
+    return loaded
 
 
 def _load_default_scenario() -> dict:
@@ -84,25 +116,7 @@ def _load_default_scenario() -> dict:
         return dict(_SIDEBAR_FALLBACK_DEFAULTS)
     with open(path) as f:
         loaded = _json.load(f)
-    # Strip non-sidebar fields (strategy / custom_conversion are per-tab choices).
-    for k in ("strategy", "custom_conversion"):
-        loaded.pop(k, None)
-    # Coerce numeric types stored as floats back to ints where the widget expects ints.
-    for k in ("initial_cash", "initial_taxable", "taxable_basis", "initial_traditional",
-              "initial_roth", "roth_contributions", "initial_hsa", "target_spend",
-              "start_age", "horizon_years", "ss_annual_benefit", "ss_claim_age",
-              "current_age", "annual_savings", "accumulation_wage_income"):
-        if k in loaded:
-            loaded[k] = int(loaded[k])
-    # Convert savings_allocation list-of-pairs to per-account pct keys for sidebar widgets.
-    if "savings_allocation" in loaded:
-        alloc_map = {name: frac for name, frac in (loaded.pop("savings_allocation") or [])}
-        loaded["savings_allocation_cash_pct"] = int(round(alloc_map.get("cash", 0.0) * 100))
-        loaded["savings_allocation_taxable_pct"] = int(round(alloc_map.get("taxable", 0.0) * 100))
-        loaded["savings_allocation_traditional_pct"] = int(round(alloc_map.get("traditional", 0.0) * 100))
-        loaded["savings_allocation_roth_pct"] = int(round(alloc_map.get("roth", 0.0) * 100))
-        loaded["savings_allocation_hsa_pct"] = int(round(alloc_map.get("hsa", 0.0) * 100))
-    return {**_SIDEBAR_FALLBACK_DEFAULTS, **loaded}
+    return {**_SIDEBAR_FALLBACK_DEFAULTS, **_normalize_loaded_scenario(loaded)}
 
 
 _SIDEBAR_DEFAULTS = _load_default_scenario()
@@ -231,7 +245,7 @@ def render_sidebar() -> SimulationInputs:
     with st.sidebar.expander("Scenario (save / load)", expanded=False):
         uploaded = st.file_uploader("Load JSON", type="json", key="scenario_upload")
         if uploaded is not None:
-            data = _json.load(uploaded)
+            data = _normalize_loaded_scenario(_json.load(uploaded))
             for k, v in data.items():
                 if f"scn_{k}" in st.session_state or k in _SIDEBAR_DEFAULTS:
                     st.session_state[f"scn_{k}"] = v
@@ -263,18 +277,19 @@ def render_sidebar() -> SimulationInputs:
         target = st.sidebar.number_input(
             "Target net annual spend (real $)", step=1_000, key="scn_target_spend",
         )
-        spend_rate = st.session_state.get("scn_spend_rate", 0.035)
+        spend_rate_pct = st.session_state.get("scn_spend_rate_pct", 3.5)
     else:
-        spend_rate = st.sidebar.slider(
-            "SWR (% of starting portfolio)", min_value=0.020, max_value=0.080, step=0.001,
-            format="%.3f",
-            key="scn_spend_rate",
-            help="Safe Withdrawal Rate as a fraction. 0.04 = 4% rule, 0.035 = conservative, 0.030 = lean-FIRE.",
+        spend_rate_pct = st.sidebar.slider(
+            "SWR (% of starting portfolio)", min_value=2.0, max_value=8.0, step=0.1,
+            format="%.1f%%",
+            key="scn_spend_rate_pct",
+            help="Safe Withdrawal Rate as a percent. 4.0% = 4% rule, 3.5% = conservative, 3.0% = lean-FIRE.",
         )
         # Live $ estimate based on the balances entered above.
         _starting_estimate = float(cash) + float(taxable) + float(traditional) + float(roth) + float(hsa)
-        st.sidebar.caption(f"≈ ${_starting_estimate * spend_rate:,.0f}/yr at current portfolio")
+        st.sidebar.caption(f"≈ ${_starting_estimate * spend_rate_pct / 100:,.0f}/yr at current portfolio")
         target = st.session_state.get("scn_target_spend", 80_000)
+    spend_rate = spend_rate_pct / 100
 
     # A. Collapse "Real returns by asset class"
     with st.sidebar.expander("Real returns by asset class", expanded=False):
@@ -301,7 +316,10 @@ def render_sidebar() -> SimulationInputs:
         )
 
     st.sidebar.markdown("### Horizon")
-    start_age = st.sidebar.number_input("Retirement age", step=1, key="scn_start_age")
+    start_age = st.sidebar.number_input(
+        "Retirement age (ceiling in target-NW mode)", step=1, key="scn_start_age",
+        help="Fixed mode: retirement begins at this age. Target-NW mode: retirement begins when net worth hits the trigger, using this as the upper-bound ceiling.",
+    )
     horizon = st.sidebar.number_input("Years to simulate", step=1, key="scn_horizon_years")
 
     # Accumulation phase inputs
@@ -337,19 +355,6 @@ def render_sidebar() -> SimulationInputs:
             st.caption(f"Allocation sum: {_alloc_total}% ⚠️ exceeds 100 (engine normalizes excess to cash)")
         else:
             st.caption(f"Allocation sum: {_alloc_total}%")
-        employer_match_pct_ui = st.number_input(
-            "Employer match (% of wages)", min_value=0.0, max_value=50.0, step=0.1,
-            value=float(st.session_state.get("scn_employer_match_pct", 0.0)) * 100,
-            key="scn_employer_match_pct_ui",
-            help="Employer contribution as a percent of your wage income.",
-        )
-        employer_match_cap_pct_ui = st.number_input(
-            "Employer match cap (% of wages)", min_value=0.0, max_value=50.0, step=0.1,
-            value=float(st.session_state.get("scn_employer_match_cap_pct", 0.0)) * 100,
-            key="scn_employer_match_cap_pct_ui",
-            help="Max wages matched. 0 = uncapped.",
-        )
-        st.caption("0 = uncapped match")
         accumulation_wage_income = st.number_input(
             "Accumulation wage income (real $)", min_value=0, step=1_000,
             key="scn_accumulation_wage_income",
@@ -488,6 +493,58 @@ def render_sidebar() -> SimulationInputs:
              "saturated near 100%.",
     )
 
+    # Retirement trigger
+    with st.sidebar.expander("Retirement trigger", expanded=False):
+        retirement_mode = st.radio(
+            "Mode",
+            options=["fixed", "target_nw"],
+            format_func=lambda m: {"fixed": "Fixed age", "target_nw": "Target net worth"}[m],
+            key="scn_retirement_mode",
+            help="Fixed: retire at the retirement age above. Target NW: retire once net worth hits the trigger (up to the retirement age ceiling).",
+        )
+        if retirement_mode == "target_nw":
+            retirement_target_nw = st.number_input(
+                "Target net worth (real $)", min_value=0, step=10_000,
+                key="scn_retirement_target_nw",
+                help="Retire when real portfolio value reaches this amount (subject to floor and ceiling).",
+            )
+
+            if st.session_state.get("scn_spend_mode") == "swr":
+                _swr_pct = float(st.session_state.get("scn_spend_rate_pct", 4.0))
+                _multiplier = 100.0 / _swr_pct if _swr_pct > 0 else 25.0
+                _btn_label = f"Set target = spend × {_multiplier:.1f} (1 / {_swr_pct:.1f}%)"
+                _btn_help = "Inverse of the SWR: principal needed for the configured withdrawal rate to cover annual spend indefinitely."
+            else:
+                _multiplier = 25.0
+                _btn_label = "Set target = spend × 25"
+                _btn_help = "Standard FI heuristic: 25× annual spend covers ~4% SWR indefinitely."
+
+            def _set_target_from_spend(multiplier: float = _multiplier) -> None:
+                spend = st.session_state.get("scn_target_spend", 0)
+                st.session_state["scn_retirement_target_nw"] = int(float(spend) * multiplier)
+
+            st.button(
+                _btn_label,
+                on_click=_set_target_from_spend,
+                help=_btn_help,
+            )
+            use_floor = st.checkbox(
+                "Set floor age",
+                value=st.session_state.get("scn_retirement_age_floor") is not None,
+                help="Lock in a minimum age before which retirement cannot trigger, even if net worth is hit.",
+            )
+            if use_floor:
+                retirement_age_floor = int(st.number_input(
+                    "Floor age (earliest retirement)", min_value=18, max_value=int(start_age),
+                    key="scn_retirement_age_floor_input",
+                    value=st.session_state.get("scn_retirement_age_floor") or int(current_age),
+                ))
+            else:
+                retirement_age_floor = None
+        else:
+            retirement_target_nw = float(st.session_state.get("scn_retirement_target_nw", 0))
+            retirement_age_floor = None
+
     # Build savings_allocation tuple from the five pct inputs.
     _retirement_age = int(start_age)
     _current_age = int(current_age)
@@ -535,9 +592,10 @@ def render_sidebar() -> SimulationInputs:
         retirement_age=_retirement_age,
         annual_savings=float(annual_savings),
         savings_allocation=_savings_alloc,
-        employer_match_pct=employer_match_pct_ui / 100,
-        employer_match_cap_pct=employer_match_cap_pct_ui / 100,
         accumulation_wage_income=float(accumulation_wage_income),
+        retirement_mode=retirement_mode,
+        retirement_target_nw=float(retirement_target_nw),
+        retirement_age_floor=retirement_age_floor,
     )
     # Build a JSON-serializable dict; savings_allocation becomes a list of [name, fraction] pairs.
     inputs_dict = {k: v for k, v in _dc.asdict(built_inputs).items() if k != "params"}
@@ -604,6 +662,13 @@ def single_scenario_view(base: SimulationInputs) -> None:
     summary = summarize(results)
 
     kpi_row(results, summary)
+
+    if base.retirement_mode == "target_nw":
+        actual_ret_age = summary.get("actual_retirement_age")
+        if actual_ret_age is not None:
+            st.info(f"Retirement triggered at age **{actual_ret_age}** (target NW reached).")
+        else:
+            st.info("Target NW not reached within horizon — retirement age ceiling applied.")
 
     st.plotly_chart(charts.balance_stack(results), use_container_width=True)
 
@@ -754,6 +819,17 @@ def strategies_view(base: SimulationInputs) -> None:
                 row["Preservation rate"] = f"{mc.preservation_rate:.0%}" if mc else "—"
             else:
                 row["Success rate"] = f"{mc.success_rate:.0%}" if mc else "—"
+            any_target_nw = any(
+                strategy_inputs[n].retirement_mode == "target_nw" for n in chosen
+            )
+            if any_target_nw:
+                inp = strategy_inputs.get(name)
+                if inp and inp.retirement_mode == "target_nw" and mc:
+                    row["Median retire age"] = str(mc.median_retirement_age) if mc.median_retirement_age is not None else "—"
+                    row["Target hit %"] = f"{mc.target_hit_rate:.0%}"
+                else:
+                    row["Median retire age"] = "—"
+                    row["Target hit %"] = "—"
         rows.append(row)
     st.markdown("##### Lifetime summary")
     if mc_enabled:
@@ -819,6 +895,17 @@ def strategies_view(base: SimulationInputs) -> None:
             fig = charts.mc_fan_chart(mc)
             fig.update_layout(title=dict(text=f"{display}: MC fan chart"))
             st.plotly_chart(fig, use_container_width=True)
+
+        # Retirement age histograms (target_nw mode only)
+        target_nw_strategies = [n for n in chosen if strategy_inputs[n].retirement_mode == "target_nw"]
+        if target_nw_strategies:
+            st.markdown("##### Retirement age distribution (target net worth mode)")
+            for name in target_nw_strategies:
+                mc = mc_results[name]
+                display = STRATEGY_DISPLAY.get(name, name)
+                fig = charts.retirement_age_histogram(mc)
+                fig.update_layout(title=dict(text=f"{display}: retirement age distribution"))
+                st.plotly_chart(fig, use_container_width=True)
 
         # Path inspector (uses first chosen strategy as reference)
         st.markdown("##### Inspect a single Monte Carlo path under each strategy")
@@ -949,7 +1036,7 @@ retirement-only model.
 
 **Per-year accumulation order:**
 1. Real growth is applied to all accounts first.
-2. `annual_savings + active income streams + employer match` forms the **contribution pool**. Employer match is capped at `employer_match_cap_pct` of wages when non-zero. Pool minus active expense streams is allocated across accounts per `savings_allocation`. **Employer match always lands in Traditional.**
+2. `annual_savings + active income streams` forms the **contribution pool**. Pool minus active expense streams is allocated across accounts per `savings_allocation`. (If you receive an employer match, fold it into `annual_savings` and route it to Traditional via the allocation.)
 3. If expense streams exceed the pool, the shortfall draws from **cash first**, then **taxable brokerage** (with LTCG gross-up). Tax-advantaged depletion (Roth, Traditional with penalty) is intentionally out of scope — if cash and taxable are exhausted, the year is flagged as a shortfall and the user should revisit their inputs. See `ROADMAP.md` for planned improvements.
 
 **Simple-tax contract:** savings are entered as **net dollars** — the user has already
@@ -965,6 +1052,30 @@ undertax shocks. State LTCG uses the existing flat-rate model unchanged.
 **Concrete example:** a $200k house down-payment at age 40, against $50k cash + $300k
 taxable (50% gain ratio) at $150k wages, will sell ≈ $162k of taxable, realize ~$81k
 LTCG on top of wages, and pay ~$12k federal LTCG tax to net the required amount.
+
+---
+
+### Dynamic retirement trigger (target net worth mode)
+
+Standard fixed-age Monte Carlo is pessimistic for early-retirement scenarios: a bad
+sequence before the assumed retirement date depletes the portfolio and locks in a weakened
+starting balance, when in reality most people would simply delay retirement by a year or
+two until the portfolio recovers. The **target net worth** trigger corrects for this by
+letting the engine decide when retirement begins based on whether the portfolio has reached
+the FI goal, rather than always retiring at the same fixed age regardless of market
+conditions. The classic FI target is 25× annual spend (the 4% rule heuristic), which you
+can populate with the "Set target = spend × 25" button.
+
+Three parameters control the trigger: `retirement_target_nw` is the real-dollar net worth
+threshold; `retirement_age_floor` is the earliest age at which the trigger can fire (useful
+when there are accumulation commitments before a certain age); and `retirement_age` (the
+"Retirement age" field in the Horizon section) acts as a ceiling — if the target is never
+hit, retirement begins at that ceiling age regardless. At the end of each accumulation year
+the engine checks whether the portfolio equals or exceeds the target and the floor age has
+been reached; if so, the retirement phase begins the following year. In Monte Carlo runs,
+each path triggers independently, producing a distribution of actual retirement ages across
+paths; the histogram of those ages (shown in the Monte Carlo tab under this mode) reveals
+how much sequence-of-returns risk compresses or stretches the accumulation window.
 
 ---
 
