@@ -65,7 +65,6 @@ def run_monte_carlo(
 ) -> MCSummary:
     """Run n_runs independent paths and collect summary stats per year and overall."""
     starting_total = build_portfolio(inputs).total
-    per_year_balances: List[List[float]] = [[] for _ in range(inputs.horizon_years)]
     paths: List[PathSummary] = []
     all_results: List[List[YearResult]] = []
 
@@ -87,11 +86,24 @@ def run_monte_carlo(
         if s["target_hit"]:
             target_hit_count += 1
         all_results.append(results)
+
+    # Paths can have varying lengths (target_nw mode lets each path retire at its own age
+    # and then run horizon_years of retirement). Aggregate per-year balances by simulation
+    # year index; paths that ended earlier simply don't contribute past their length.
+    # Depleted paths break early in simulate(), so they're padded with 0 to the depletion-
+    # age boundary; non-depleted paths past their personal horizon are excluded entirely.
+    max_years = max((len(r) for r in all_results), default=inputs.horizon_years)
+    per_year_balances: List[List[float]] = [[] for _ in range(max_years)]
+    for results in all_results:
         for y, r in enumerate(results):
             per_year_balances[y].append(r.ending_total)
-        # Pad early-terminated paths with 0 for the rest of the horizon.
-        for y in range(len(results), inputs.horizon_years):
-            per_year_balances[y].append(0.0)
+        # Pad depleted paths with 0 for the rest of *their* expected window. For target_nw
+        # paths, the expected window depends on when they retired; we approximate using
+        # max_years, which is conservative (depleted late-retirees pad less than they should
+        # because we don't know their target horizon — but their balance is already 0).
+        if results and results[-1].ending_total < 1.0:
+            for y in range(len(results), max_years):
+                per_year_balances[y].append(0.0)
 
     success = sum(1 for p in paths if not p.depleted) / n_runs
     preservation = sum(1 for p in paths if p.ending_total >= starting_total) / n_runs
@@ -100,16 +112,20 @@ def run_monte_carlo(
     p5_ending = _percentile(endings, 0.05)
     p95_ending = _percentile(endings, 0.95)
 
-    depletion_ages = [inputs.start_age + p.years_funded for p in paths if p.depleted]
+    # Use current_age (the actual simulation start) for the age axis — start_age is the
+    # retirement-age ceiling and would mislabel charts when an accumulation phase exists.
+    effective_start = inputs.current_age if inputs.current_age is not None else inputs.start_age
+
+    depletion_ages = [effective_start + p.years_funded for p in paths if p.depleted]
     if depletion_ages:
         depletion_ages.sort()
         median_depletion_age = _percentile([float(a) for a in depletion_ages], 0.5)
     else:
         median_depletion_age = None
 
-    age = [inputs.start_age + y for y in range(inputs.horizon_years)]
+    age = [effective_start + y for y in range(max_years)]
     p5, p25, p50, p75, p95 = [], [], [], [], []
-    for y in range(inputs.horizon_years):
+    for y in range(max_years):
         sb = sorted(per_year_balances[y])
         p5.append(_percentile(sb, 0.05))
         p25.append(_percentile(sb, 0.25))

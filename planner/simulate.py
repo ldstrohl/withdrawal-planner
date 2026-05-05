@@ -285,8 +285,17 @@ def simulate(
     )
     boundary_age = retirement_age
 
+    # In target_nw mode, horizon_years counts *retirement* years only — total path length
+    # = accumulation_years + horizon_years, with accumulation_years path-dependent (target
+    # hit early) up to the ceiling. In fixed mode, horizon_years is the legacy total horizon.
+    if target_nw_mode:
+        max_iterations = max(0, retirement_age - current_age) + max(0, inputs.horizon_years)
+    else:
+        max_iterations = inputs.horizon_years
+    retirement_years_run = 0
+
     peak_total = portfolio.total
-    for y in range(inputs.horizon_years):
+    for y in range(max_iterations):
         age = current_age + y
 
         if age < boundary_age:
@@ -369,8 +378,14 @@ def simulate(
             )
         )
 
+        retirement_years_run += 1
+
         # Stop if portfolio is depleted.
         if ending_total < 1.0 and plan.shortfall > 0:
+            break
+        # In target_nw mode, stop after horizon_years of retirement (regardless of total
+        # iteration count, which only caps the worst case for safety).
+        if target_nw_mode and retirement_years_run >= inputs.horizon_years:
             break
 
     return results

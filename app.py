@@ -150,11 +150,24 @@ def cached_mc_lognormal(
     return run_monte_carlo(inputs, returns_model=model, n_runs=n_runs)
 
 
+def _max_simulation_years(inputs: SimulationInputs) -> int:
+    """Worst-case path length (used to size HistoricalPlayback's data window).
+
+    In target_nw mode, individual paths can run up to (ceiling - current) accumulation
+    years plus horizon_years of retirement. Fixed mode is always exactly horizon_years.
+    """
+    if inputs.retirement_mode != "target_nw":
+        return inputs.horizon_years
+    current = inputs.current_age if inputs.current_age is not None else inputs.start_age
+    ceiling = inputs.retirement_age if inputs.retirement_age is not None else inputs.start_age
+    return max(0, ceiling - current) + max(0, inputs.horizon_years)
+
+
 @st.cache_data(show_spinner="Running historical playback...")
 def cached_mc_historical(inputs: SimulationInputs, start_year_floor: int):
     """Rolling-start replay of historical real returns. n_runs is determined by data coverage."""
     model = HistoricalPlayback(
-        horizon_years=inputs.horizon_years,
+        horizon_years=_max_simulation_years(inputs),
         start_year_floor=start_year_floor,
     )
     return run_monte_carlo(inputs, returns_model=model, n_runs=model.n_paths)
@@ -240,10 +253,12 @@ def render_sidebar() -> SimulationInputs:
     for k, v in _SIDEBAR_DEFAULTS.items():
         st.session_state.setdefault(f"scn_{k}", v)
     st.session_state.setdefault("scn_optimization_target", "depletion")
+    st.session_state.setdefault("scenario_save_name", "scenario")
 
-    # G. Scenario save/load — top of sidebar (save UI is added at the bottom after inputs are built)
-    _save_load_exp = st.sidebar.expander("Scenario (save / load)", expanded=False)
-    with _save_load_exp:
+    # G. Scenario load — top of sidebar. Save UI is a separate expander at the bottom
+    # (built after inputs are constructed). Two separate expanders avoid the double-write
+    # pattern, which Streamlit handles unreliably for `with container:` blocks.
+    with st.sidebar.expander("Load scenario", expanded=False):
         uploaded = st.file_uploader("Load JSON", type="json", key="scenario_upload")
         if uploaded is not None:
             _upload_id = f"{uploaded.name}_{uploaded.size}"
@@ -606,13 +621,17 @@ def render_sidebar() -> SimulationInputs:
     inputs_dict["savings_allocation"] = [
         [name, frac] for name, frac in built_inputs.savings_allocation if frac > 0
     ]
-    with _save_load_exp:
-        st.divider()
-        _save_name = st.text_input("Save as", value="scenario", key="scenario_save_name")
+    with st.sidebar.expander("Save scenario", expanded=False):
+        _save_name = st.text_input(
+            "Filename (without .json)",
+            key="scenario_save_name",
+            help="Press Enter or click outside the field to commit your filename before clicking Save.",
+        )
+        _resolved_name = (_save_name or "scenario").strip() or "scenario"
         st.download_button(
             "Save scenario JSON",
             data=_json.dumps(inputs_dict, indent=2),
-            file_name=f"{_save_name}.json",
+            file_name=f"{_resolved_name}.json",
             mime="application/json",
         )
 
@@ -757,7 +776,7 @@ def strategies_view(base: SimulationInputs) -> None:
                 rho = st.slider("Stock/bond correlation", -0.5, 0.6, 0.05, 0.05)
 
     elif model_choice == "historical":
-        preview = HistoricalPlayback(horizon_years=base.horizon_years)
+        preview = HistoricalPlayback(horizon_years=_max_simulation_years(base))
         if preview.n_paths == 0:
             st.error(
                 f"Horizon of {base.horizon_years} years exceeds the historical dataset "
@@ -928,7 +947,7 @@ def strategies_view(base: SimulationInputs) -> None:
             )
             year_label_fn = None
         else:
-            path_model = HistoricalPlayback(horizon_years=base.horizon_years)
+            path_model = HistoricalPlayback(horizon_years=_max_simulation_years(base))
             year_label_fn = lambda i: f" (start year {path_model.start_years[i]})"
 
         idx = _pick_mc_path(ref_mc, year_label_fn, key_prefix="strat_")
