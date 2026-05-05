@@ -1015,3 +1015,122 @@ def test_mc_fixed_mode_target_hit_rate_is_one():
                              sigma_bonds=0.06, mu_cash=0.0, sigma_cash=0.01, seed=7)
     mc = run_monte_carlo(inputs, returns_model=model, n_runs=50)
     assert mc.target_hit_rate == 1.0
+
+
+# --- variable retirement horizon (target_nw mode) tests --------------------
+
+def test_target_nw_variable_horizon_early_trigger():
+    """In target_nw mode, horizon_years is the *retirement* window. Early trigger -> short total."""
+    from planner.simulate import SimulationInputs, simulate, summarize
+    from planner.returns import ConstantReturns
+    # 50k/yr, target 200k, hits at end of year 3 (age 38), retires at age 39.
+    # horizon_years=10 means 10 years of retirement -> total = 4 accum + 10 ret = 14 years.
+    kwargs = _dynamic_ret_base_kwargs()
+    kwargs["horizon_years"] = 10
+    inputs = SimulationInputs(
+        retirement_age=60,
+        retirement_mode="target_nw",
+        retirement_target_nw=200_000.0,
+        **kwargs,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    actual = summarize(r)["actual_retirement_age"]
+    expected_accum = actual - kwargs["current_age"]
+    assert actual == 39
+    assert len(r) == expected_accum + kwargs["horizon_years"], (len(r), expected_accum)
+    assert r[-1].plan.phase == "retirement"
+
+
+def test_target_nw_variable_horizon_ceiling_path():
+    """Target never hit -> accumulation runs to ceiling, then horizon_years of retirement."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    kwargs = _dynamic_ret_base_kwargs()
+    kwargs["horizon_years"] = 10
+    ceiling = 50
+    inputs = SimulationInputs(
+        retirement_age=ceiling,
+        retirement_mode="target_nw",
+        retirement_target_nw=100_000_000.0,  # never hit
+        **kwargs,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    expected_accum = ceiling - kwargs["current_age"]  # 50-35 = 15
+    assert len(r) == expected_accum + kwargs["horizon_years"], len(r)
+    # First 15 are accumulation, next 10 are retirement
+    assert r[expected_accum - 1].plan.phase == "accumulation"
+    assert r[expected_accum].plan.phase == "retirement"
+
+
+def test_fixed_mode_horizon_unchanged_total_years():
+    """Fixed mode still treats horizon_years as the total (legacy semantics, no regression)."""
+    from planner.simulate import SimulationInputs, simulate
+    from planner.returns import ConstantReturns
+    kwargs = _dynamic_ret_base_kwargs()
+    kwargs["horizon_years"] = 20
+    # Fixed mode with current_age < retirement_age: accumulation + retirement = 20 total.
+    inputs = SimulationInputs(
+        retirement_age=45,
+        retirement_mode="fixed",
+        **kwargs,
+    )
+    r = simulate(inputs, returns_model=ConstantReturns(0, 0, 0))
+    assert len(r) == 20
+
+
+def test_mc_age_axis_uses_current_age_not_retirement_age():
+    """MCSummary.age starts from current_age (the actual sim start), not start_age (the ceiling)."""
+    from planner.montecarlo import run_monte_carlo
+    from planner.returns import LognormalReturns
+    from planner.simulate import SimulationInputs
+    inputs = SimulationInputs(
+        current_age=33, retirement_age=60, start_age=60, horizon_years=20,
+        retirement_mode="fixed",
+        annual_savings=20_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        initial_cash=50_000, initial_taxable=200_000, taxable_basis=150_000,
+        initial_traditional=100_000, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=40_000,
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single", state_code="NONE",
+        stock_return=0.06, bond_return=0.02, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    model = LognormalReturns(mu_stocks=0.06, sigma_stocks=0.12, mu_bonds=0.02,
+                             sigma_bonds=0.05, mu_cash=0.0, sigma_cash=0.01, seed=42)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=20)
+    assert mc.age[0] == 33, mc.age[0]
+    # Length matches horizon (fixed mode)
+    assert len(mc.age) == 20
+
+
+def test_mc_age_axis_target_nw_extends_past_horizon():
+    """In target_nw mode, MC age axis spans current_age through ceiling+horizon at most."""
+    from planner.montecarlo import run_monte_carlo
+    from planner.returns import LognormalReturns
+    from planner.simulate import SimulationInputs
+    current = 35
+    ceiling = 50
+    horizon = 20
+    inputs = SimulationInputs(
+        current_age=current, retirement_age=ceiling, start_age=ceiling, horizon_years=horizon,
+        retirement_mode="target_nw",
+        retirement_target_nw=10_000_000_000.0,  # absurd, forces ceiling for all paths
+        annual_savings=30_000.0,
+        savings_allocation=(("taxable", 1.0),),
+        initial_cash=20_000, initial_taxable=100_000, taxable_basis=80_000,
+        initial_traditional=50_000, initial_roth=0, roth_contributions=0.0, initial_hsa=0,
+        target_spend=30_000,
+        ss_annual_benefit=0, ss_claim_age=67,
+        filing_status="single", state_code="NONE",
+        stock_return=0.06, bond_return=0.02, cash_return=0.0,
+        strategy="minimal_convert",
+    )
+    model = LognormalReturns(mu_stocks=0.06, sigma_stocks=0.12, mu_bonds=0.02,
+                             sigma_bonds=0.05, mu_cash=0.0, sigma_cash=0.01, seed=11)
+    mc = run_monte_carlo(inputs, returns_model=model, n_runs=15)
+    # All paths forced to ceiling, total = (ceiling - current) + horizon = 35
+    expected_total = (ceiling - current) + horizon
+    assert mc.age[0] == current
+    assert len(mc.age) == expected_total
+    assert mc.age[-1] == current + expected_total - 1
